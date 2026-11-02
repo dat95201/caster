@@ -9,15 +9,19 @@ past the first reported number without invalidating everything collected before.
 
 ---
 
-## 1. The evaluation split: 30% held out, stratified, per task
+## 1. The evaluation split is OPT-IN; the oracle is the whole pool
 
-**30% of each task's pool is held out as `P_eval`, split within each of F2P and
-P2P, seeded from the task name, drawn once per fault and shared across models.**
-`caster/bench/gate.py::EVAL_RATIO`, `_split_stratified`.
+**`--holdout` defaults to 0: `P_loop` is the pool and `P_eval` is empty.**
+`caster/bench/gate.py::HOLDOUT`, `_split_stratified`. See decision 23 for why
+the default moved; this entry describes the split as it behaves when asked for.
 
-* **30%** because the ratio is upstream of the pool-size gate and of every
-  leakage figure. At a ≥20 `P_loop` threshold a 30% holdout means a fault needs
-  ~29 usable probes to be admitted, which the measured pool-size distribution
+**`--holdout 0.3` holds 30% of each task's pool out as `P_eval`, split within
+each of F2P and P2P, seeded from the task name, drawn once per fault and shared
+across models.**
+
+* **30%** because the ratio is upstream of the pool-size screen and of every
+  leakage figure. Under `--min-pool 20` a 30% holdout means a fault needs ~29
+  usable probes to be admitted, which the measured pool-size distribution
   (median 31) supports.
 * **Stratified**, because a uniform split breaks in both directions. If `P_loop`
   draws no F2P probe, round 1 accepts the unmodified faulty program and the
@@ -404,3 +408,86 @@ two F2P cases, one per half — a floor that is not a difficulty proxy.
 Cells whose task is not in the frozen pool — the control arm's — are excluded
 from the bands. Pooling them would put back the exact correlation the control
 arm exists to measure.
+
+## 22. Every pre-treatment screen is off by default
+
+`GateConfig` defaults: `min_loop_pool=1`, `lines_max=None`, `date_min=None`,
+`dedup_per_group=False`.
+
+**None of the "off" values is falsy.** `0` and `""` would switch a screen off by
+being falsy, which forces a truthiness guard onto the check itself — and `0` is
+a legitimate line count, so for a ceiling it also conflates "no limit" with
+"reject everything". A ceiling's absence is infinity, not a small number, and
+`None` expresses that without putting `Infinity` into `tasks.json`, which
+`pool_sha256` hashes. `min_loop_pool` is the opposite case and stays an `int`:
+there *is* a real floor (1), so the comparison is always meaningful.
+
+Decision 21 moved the pool-size screen out of the gate. The same argument
+applies to the three that were left, so they moved too. What remains in the
+gate is only what makes the measurement **defined**; everything that merely
+shaped the population is now decided after the run, where it can be redrawn.
+
+| was | now | why the gate was the wrong place |
+|---|---|---|
+| G6 `lines_max=120` | `0` (no limit) | The real constraint is the output budget, not a line count, and a truncated reply already surfaces as `context_overflow` in the proposal-error table. The screen measured a proxy, upstream of the thing under study. |
+| G5 `date_min="2022-04-01"` | `""` (no cut) | A cutoff *assumes* contamination away. Running every era and banding by contest date **measures** it: `analyse.arms_by_era` reports `pre-cutoff` beside `post-cutoff`, and the gap is the effect, as a number. |
+| G4 dedup per coding task | opt-in `--dedup-per-group` | Correlated cells are a clustering problem. `bootstrap_cpu` now resamples the **coding task** (`cluster_of`), so faults sharing a pool move together and every one of them can stay. Dropping data was the weaker fix. |
+
+G4's removal is the one that required a code change elsewhere, and it is worth
+stating plainly: the gate was deleting faults to make an assumption true that
+the estimator should have been handling. Clustering on `abc221_f` instead of on
+`abc221_f/40898300` keeps every fault **and** keeps the independence assumption
+where it belongs.
+
+**What is still rejected, and why none of it is a screen on a task property:**
+
+* G2 — no `out/` file: the expected value would have to come from the reference,
+  so the pool would carry two authorities and only one is AtCoder's.
+* G1 — the reference disagrees with `out/`, or the faulty program passes the
+  whole pool: in the first case nothing derived from that reference means
+  anything, in the second round 1 accepts the unmodified program.
+* G3 — `P_loop` or `P_eval` with no F2P case. **This one cannot become a band.**
+  A diluted average is still a true average of something, so pool size, era and
+  length can all be banded afterwards. A missing F2P case in `P_loop` makes the
+  recorded accept *false* — `success@B` counts a non-fix as a fix — and no
+  post-hoc cut repairs a number that was wrong when it was written.
+
+The rule the whole file now follows: **screen only where the alternative is a
+wrong number, never where the alternative is a wider population.**
+
+## 23. The holdout is opt-in, and `success@B` is a plausibility rate
+
+`--holdout`, default `0.0`.
+
+RQ1 measures **the CPU cost of refuting a patch**, and the thing being
+scheduled is the probe list. A 30% holdout removes 30% of that list — on a
+median pool of 42, thirteen probes — from the exact question under study, and
+it is the sole reason G3 exists at all. For the primary claim the split buys
+nothing and costs evidence.
+
+What it buys is the secondary claim, and that claim is real: with the loop
+accepting on the same probes it was judged by, "accepted" cannot distinguish a
+fix from a patch that fit those probes. So the machinery stays, behind a flag.
+
+**The honest naming.** At `--holdout 0`, `success@B` is a **plausible**-patch
+rate — the standard APR term for "passes the available tests" — not a
+correctness rate. `caster preflight` says so in its notes on every run, and the
+paper must use that word. A number that cannot be wrong is not a weaker number
+as long as it is not called something it is not.
+
+Two things follow mechanically:
+
+* **G3's two F2P checks run only under a holdout.** Without one, `P_loop` is the
+  pool, `f2p` is non-empty by G1, and both are satisfied by construction —
+  asserting them would be theatre.
+* **`regression_rate` becomes a guarantee rather than a measurement.** The loop
+  runs every P2P probe and rejects on failure, so an accepted patch breaks
+  nothing in the pool, by construction. `score_on_eval` returns a clean result
+  when `P_eval` is empty.
+
+**What is given up, and it is not nothing.** The measured exploitability of the
+disclosure axis — `full` 7.0% (19/273) against `sample-only` 0.0% — needs
+held-out probes. Steering is half the thesis, so the comparison between
+`km+steer`, `km+steer-sample` and `km+steer-noreq` on *overfitting* (as opposed
+to on CPU) requires a `--holdout` pass. That pass can be a small subset of
+tasks: it answers a different question from RQ1 and does not need the full grid.

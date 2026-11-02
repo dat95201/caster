@@ -23,12 +23,13 @@ def test_a_sound_fault_is_admitted(adapter):
 
 
 def test_g3_counts_the_LOOP_half_not_the_pool(adapter):
-    """Applying the threshold to the pool and THEN splitting 30% off admits
-    tasks the mechanism provably cannot act on — the exact thing the threshold
-    was chosen to exclude."""
+    """Only meaningful under `--holdout`. Applying the threshold to the pool and
+    THEN splitting a share off into `P_eval` admits tasks the mechanism provably
+    cannot act on — the exact thing the threshold was chosen to exclude."""
     pool = len(adapter.probes("abc001_a/1001"))
     loose = gate_one(adapter, "abc001_a/1001",
-                     GateConfig(min_loop_pool=pool - 2, date_min="2000-01-01"))
+                     GateConfig(min_loop_pool=pool - 2, date_min="2000-01-01",
+                                holdout=0.30))
     assert not loose.admitted and loose.failed_gate == "G3"
     assert "|P_loop|" in loose.reason
 
@@ -160,12 +161,14 @@ def test_spec_cases_have_no_unsafe_fallback(adapter):
 
 
 def test_g4_keeps_one_fault_per_coding_task_by_a_seeded_uniform_draw(adapter, corpus_root):
-    """Several submissions share ONE test pool, so their cells are correlated and
-    the cluster bootstrap's independence assumption fails.
+    """OPT-IN now (`--dedup-per-group`). Off by default, because dropping data is
+    only one answer to correlated cells and clustering on the shared unit is the
+    better one — `analyse.cluster_of` resamples the coding task, so every fault
+    can stay and the independence assumption holds where it is needed.
 
-    The draw is deliberately NOT "the fault with the largest K-proxy": selecting
-    on the same statistic the analysis reports makes the pool's distribution an
-    artefact of the dedup rule.
+    When it IS switched on, the draw is deliberately NOT "the fault with the
+    largest K-proxy": selecting on the same statistic the analysis reports makes
+    the pool's distribution an artefact of the dedup rule.
     """
     from conftest import CORRECT, FAULTY, _write
     from caster.bench.adapter import ConDefectsAdapter
@@ -177,7 +180,13 @@ def test_g4_keeps_one_fault_per_coding_task_by_a_seeded_uniform_draw(adapter, co
     fresh = ConDefectsAdapter(root=corpus_root, timeout=10.0)
     assert len(fresh.tasks()) == 3
 
-    doc = freeze(fresh, cfg=GateConfig(min_loop_pool=6, date_min="2000-01-01"))
+    off = freeze(fresh, cfg=GateConfig(min_loop_pool=6, date_min="2000-01-01"))
+    groups_off = [off["tasks"][n]["group"] for n in off["pool_order"]]
+    assert len(groups_off) != len(set(groups_off)), "default keeps both faults"
+    assert not [t for t in off["tasks"].values() if t["failed_gate"] == "G4"]
+
+    doc = freeze(fresh, cfg=GateConfig(min_loop_pool=6, date_min="2000-01-01",
+                                       dedup_per_group=True))
     groups = [doc["tasks"][n]["group"] for n in doc["pool_order"]]
     assert len(groups) == len(set(groups))
     dropped = [t for t in doc["tasks"].values() if t["failed_gate"] == "G4"]
@@ -241,7 +250,7 @@ def test_the_gate_no_longer_screens_on_pool_size(adapter):
     """
     t = gate_one(adapter, "abc001_a/1001", GateConfig(date_min="2000-01-01"))
     assert t.admitted, t.reason
-    assert len(t.p_loop) < 20, "the fixture pool must be small enough to matter"
+    assert len(t.p_loop) < 30, "the fixture pool must be small enough to matter"
     assert t.gates["G3"]
 
 
@@ -265,7 +274,7 @@ def test_the_default_floor_is_one_probe_not_a_disabled_check():
 def test_min_pool_still_re_imposes_the_old_screen(adapter):
     """Reproducibility of the old corpus is the point of keeping the flag."""
     t = gate_one(adapter, "abc001_a/1001",
-                 GateConfig(min_loop_pool=20, date_min="2000-01-01"))
+                 GateConfig(min_loop_pool=100, date_min="2000-01-01"))
     assert not t.admitted and t.failed_gate == "G3"
     assert "|P_loop|" in t.reason
 
@@ -296,7 +305,94 @@ def test_g3_still_puts_a_floor_under_the_pool(adapter, tmp_path):
     _write(root / "date.txt", "abc001_a 2023-05-01\nabc002_b 2023-06-01\n"
                               "abc004_d 2023-07-01\n")
 
-    t = gate_one(ConDefectsAdapter(root=root, timeout=10.0), "abc004_d/4004",
-                 GateConfig(date_min="2000-01-01"))
+    ad = ConDefectsAdapter(root=root, timeout=10.0)
+    # With no holdout there is nothing to leave empty, so the task is fine.
+    assert gate_one(ad, "abc004_d/4004", GateConfig(date_min="2000-01-01")).admitted
+    t = gate_one(ad, "abc004_d/4004",
+                 GateConfig(date_min="2000-01-01", holdout=0.30))
     assert not t.admitted and t.failed_gate == "G3"
     assert "F2P" in t.reason
+
+
+def test_every_pre_treatment_screen_is_off_by_default(tmp_path):
+    """G5 (date) and G6 (source length) are gone from the defaults too.
+
+    A 2021 contest with a 200-line program is admitted. The contamination
+    question is answered by a BAND (`analyse.arms_by_era`) rather than by a
+    cutoff that assumes it away, and a source longer than the output budget
+    shows up where it actually happens — `context_overflow` in the
+    proposal-error table — not as a screen on a proxy.
+    """
+    from conftest import _write, build_corpus
+    from caster.bench.adapter import ConDefectsAdapter
+
+    root = build_corpus(tmp_path / "old")
+    pad = "".join(f"# filler {i}\n" for i in range(200))
+    code = root / "Code" / "abc005_e" / "Python" / "5005"
+    _write(code / "correctVersion.py", pad + "n = int(input())\nprint(n * 2)\n")
+    _write(code / "faultyVersion.py",
+           pad + "n = int(input())\nprint(n * 2 if n < 5 else n * 3)\n")
+    _write(code / "faultLocation.txt", "201\n")
+    test = root / "Test" / "abc005" / "E"
+    for i in range(8):
+        _write(test / "in" / f"01_random_{i:02d}.txt", f"{i + 1}\n")
+        _write(test / "out" / f"01_random_{i:02d}.txt", f"{(i + 1) * 2}\n")
+    _write(root / "date.txt", "abc001_a 2023-05-01\nabc002_b 2023-06-01\n"
+                              "abc005_e 2021-03-01\n")
+
+    t = gate_one(ConDefectsAdapter(root=root, timeout=10.0), "abc005_e/5005",
+                 GateConfig())
+    assert t.admitted, t.reason
+    assert t.date == "2021-03-01" and t.n_lines > 120
+    assert t.gates["G5"] and t.gates["G6"]
+
+
+def test_the_holdout_is_off_by_default_and_the_oracle_is_the_whole_pool(adapter):
+    """RQ1 measures the cost of REFUTING, and the probe list is the thing being
+    scheduled — holding 30% of it back removes evidence from the question under
+    study and is the only reason G3 has to exist.
+
+    The price is named rather than hidden: with no holdout, `success@B` is a
+    **plausible**-patch rate, not a correctness rate.
+    """
+    t = gate_one(adapter, "abc001_a/1001", GateConfig(date_min="2000-01-01"))
+    assert t.admitted, t.reason
+    assert set(t.p_loop) == set(t.pool), "the oracle is the whole pool"
+    assert t.p_eval == ()
+
+
+def test_holdout_restores_the_split_for_measuring_overfitting(adapter):
+    """Switched on, it is the old behaviour exactly: stratified within F2P and
+    within P2P, the two halves disjoint and covering the pool."""
+    t = gate_one(adapter, "abc001_a/1001",
+                 GateConfig(date_min="2000-01-01", holdout=0.30))
+    assert t.admitted, t.reason
+    assert t.p_eval, "a holdout was asked for"
+    assert set(t.p_loop) | set(t.p_eval) == set(t.pool)
+    assert not (set(t.p_loop) & set(t.p_eval))
+    assert set(t.f2p) & set(t.p_loop) and set(t.f2p) & set(t.p_eval)
+
+
+def test_no_screen_is_switched_off_by_a_falsy_sentinel():
+    """`0` and `""` are falsy, so using them for "off" forces the CHECK to be
+    wrapped in a truthiness test — and `0` is also a legitimate line count, so
+    it conflates "no limit" with "reject everything". A ceiling's absence is
+    infinity, not a small number; `None` says "unset" and serialises to `null`,
+    which `pool_sha256` can hash (`Infinity` is not valid JSON).
+    """
+    import dataclasses
+    import inspect
+    import json
+
+    from caster.bench import gate as gate_mod
+
+    cfg = GateConfig()
+    assert cfg.lines_max is None and cfg.date_min is None
+    json.loads(json.dumps(dataclasses.asdict(cfg)))      # must round-trip
+
+    src = inspect.getsource(gate_mod.gate_one)
+    assert "if cfg.lines_max is not None and" in src
+    assert "if cfg.date_min is not None and" in src
+    for guard in ("if cfg.lines_max and", "if cfg.date_min and",
+                  "if cfg.min_loop_pool and"):
+        assert guard not in src, f"truthiness guard back in gate_one: {guard}"

@@ -81,8 +81,14 @@ def test_defaults_match_the_spec():
     assert args.seeds == "0,1,2"            # 3 seeds, not 5
     assert args.explore_p == 0.15           # assert args.prior == "shipped"          # assert args.cold_start == "max"         # assert args.tie_break == "hash"         # assert args.budget == 20
     f = cli.build_parser().parse_args(["freeze"])
-    assert f.min_pool == 1 and f.lines_max == 120 and f.eval_ratio == 0.30
-    assert f.date_min == "2022-04-01" and f.pool_order == "interleave"
+    # Every pre-treatment screen is OFF by default: the grid runs every sound
+    # fault and `analyse` bands by pool size and contest era after the run.
+    assert f.min_pool == 1 and f.holdout == 0.0
+    # Unset, not a falsy sentinel: `0` is a legitimate line count and `""` is
+    # falsy, so either would need a truthiness guard on the check itself.
+    assert f.lines_max is None and f.date_min is None
+    assert not f.dedup_per_group
+    assert f.pool_order == "interleave"
 
 
 # ── the pipeline ─────────────────────────────────────────────────────────────

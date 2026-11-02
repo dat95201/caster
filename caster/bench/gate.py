@@ -61,10 +61,30 @@ than about size:
 Together they put a real floor under the pool (two F2P cases, one per half)
 without screening on a difficulty proxy.
 
+**G6, G5 and G4 are off by default too.** Each used to cut the corpus before
+any cell existed; each is now either a post-hoc band or a fix somewhere the fix
+belongs.
+
+* **G6 (`--lines-max`, default 0 = no limit).** The real constraint is the
+  output budget, not a line count: a program longer than `max_tokens` produces
+  a truncated reply. That already surfaces where it happens — `context_overflow`
+  in the proposal-error table, reported before any scheduler number — so a
+  pre-treatment screen on source length was measuring the symptom upstream of
+  the thing under study.
+* **G5 (`--date-min`, default empty).** Contamination is real, but a cutoff
+  *assumes* it away. Running every era and banding by contest date **measures**
+  it: `analyse` reports the arms by era, and the pre-cutoff band answers the
+  reviewer's question with a number instead of an assertion.
+* **G4 (`--dedup-per-group`, default off).** Faults sharing one AtCoder problem
+  share a test pool, so their cells are correlated — but the answer to
+  correlated observations is to cluster on the shared unit, not to throw data
+  away. The cluster bootstrap now resamples **coding tasks**, so every fault can
+  stay and the independence assumption holds where it is actually needed.
+
 `freeze` still draws an **unfiltered control arm** — a uniform sample over the
 G1-only survivors a threshold cut, pre-registered as "reported whatever it
-shows". With the pool-size screen gone it covers what remains: G5's date cut,
-G6's length cut, and an explicitly passed `--min-pool`.
+shows". With every default screen gone it covers only what an operator switches
+back on.
 
 **The funnel is counted in faults, not problems**, and every fault examined is
 published with the first gate it failed, so "N examined → M admitted" reproduces
@@ -83,12 +103,19 @@ from caster.bench.adapter import ConDefectsAdapter, outputs_equal
 from caster.bench.protocol import TestCase
 from caster.exec.sandbox import Outcome, run_program
 
-#: the `P_loop`/`P_eval` ratio, decided and recorded here rather than
-#: deferred (see `docs/DECISIONS.md`). 30% held out, stratified within F2P and
-#: P2P, seeded from the task name, **drawn once per fault and shared across
-#: models**: the split is a property of the task, so sharing it keeps RQ3b
-#: comparing curves over one denominator instead of two.
-EVAL_RATIO = 0.30
+#: **0 by default: the oracle is the WHOLE pool.** RQ1 measures the cost of
+#: refuting, and the thing being scheduled is the probe list — holding 30% of
+#: it back removes evidence from the question under study and forces G3 to
+#: exist. With no holdout, `P_loop` is the pool and `P_eval` is empty.
+#:
+#: `--holdout 0.3` draws one: stratified within F2P and P2P, seeded from the
+#: task name, **drawn once per fault and shared across models**, so the same
+#: handicap lands on every arm and cancels in a paired comparison. Switch it on
+#: for the one question the full pool cannot answer — whether an accepted patch
+#: FIT the disclosed probes rather than fixing the fault. `success@B` without a
+#: holdout is a **plausible**-patch rate, not a correctness rate, and must be
+#: reported under that name.
+HOLDOUT = 0.0
 
 #: G3. The floor, not a screen: a `P_loop` with no probe at all cannot be
 #: scheduled by anything. Deliberately **1 rather than 0** — 0 would be a
@@ -101,14 +128,29 @@ MIN_LOOP_POOL = 1
 
 #: G5. The latest cut that still yields the required number of candidates — a
 #: threshold set by pool size rather than by theory, and declared as such.
-DATE_MIN = "2022-04-01"
+#: Empty = no cut. Contamination is banded by contest date in `analyse` rather
+#: than assumed away by a cutoff — running every era MEASURES the effect, and
+#: the pre-2022 band is the number a reviewer actually wants.
+#: G5. `None` = no cut. Deliberately not `""`: an empty string is FALSY, so
+#: guarding the check with `if cfg.date_min` tests truthiness rather than
+#: configuration — the same mistake `min_loop_pool = 0` would have been. `None`
+#: means "unset", `is not None` says exactly that, and it serialises to `null`.
+DATE_MIN: str | None = None
 
 #: G6. Every prompt carries the whole current source (slot S3) and `max_tokens`
 #: is sized from it, so a program longer than the output budget produces a
 #: truncated response every round on exactly the tasks where repair is hardest.
 #: There is deliberately no LOWER bound: a short program is a perfectly good
 #: fault, and screening one out would be selection on a difficulty proxy.
-LINES_MAX = 120
+#: 0 = no limit. A program longer than the output budget yields a truncated
+#: reply, and that is recorded where it happens (`context_overflow` in the
+#: proposal-error table), not screened for upstream.
+#: G6. `None` = no ceiling. `0` would be worse than wrong here: it is falsy, so
+#: it needs a truthiness guard, AND it is a legitimate line count, so it
+#: conflates "no limit" with "reject everything". A ceiling's absence is
+#: infinity, not a small number — and `None` expresses that without putting
+#: `Infinity` into `tasks.json`, which `pool_sha256` hashes.
+LINES_MAX: int | None = None
 
 GATE_ORDER = ("G2", "G1", "G6", "G5", "G3", "G4")
 
@@ -116,10 +158,13 @@ GATE_ORDER = ("G2", "G1", "G6", "G5", "G3", "G4")
 @dataclasses.dataclass(frozen=True)
 class GateConfig:
     min_loop_pool: int = MIN_LOOP_POOL
-    date_min: str = DATE_MIN
-    lines_max: int = LINES_MAX
-    eval_ratio: float = EVAL_RATIO
+    date_min: str | None = DATE_MIN
+    lines_max: int | None = LINES_MAX
+    holdout: float = HOLDOUT
     control_size: int = 0
+    #: G4. Off: faults sharing a coding task all run, and the cluster bootstrap
+    #: resamples coding tasks so their correlation is handled where it matters.
+    dedup_per_group: bool = False
     #: the frozen pool's ordering. `interleave` is the decision (see
     #: `docs/DECISIONS.md`): ConDefects' own order is contest order, correlated
     #: with date, rating and therefore pool size, so a killed fleet cutting
@@ -337,33 +382,36 @@ def gate_one(adapter: ConDefectsAdapter, task_name: str,
 
 
     # ── G6 — the source fits a prompt ───────────────────────────────────────
-    if n_lines > cfg.lines_max:
+    if cfg.lines_max is not None and n_lines > cfg.lines_max:
         return fail("G6", f"{n_lines} lines > LINES_MAX={cfg.lines_max}")
     gates["G6"] = True
 
     # ── G5 — contamination cut ──────────────────────────────────────────────
-    if cfg.date_min and date is not None and date < cfg.date_min:
+    if cfg.date_min is not None and date is not None and date < cfg.date_min:
         return fail("G5", f"contest {date} predates --date-min {cfg.date_min}")
     gates["G5"] = True
 
-    # ── the split, then G3 on its loop half ────────────────────────────
-    p_loop, p_eval = _split_stratified(f2p, p2p, ratio=cfg.eval_ratio,
+    # ── the split (only if asked), then G3 on its loop half ────────────
+    p_loop, p_eval = _split_stratified(f2p, p2p, ratio=cfg.holdout,
                                        seed_text=f"split|{task_name}")
     known.update(p_loop=p_loop, p_eval=p_eval)
     loop_set, eval_set = set(p_loop), set(p_eval)
-    if not (set(f2p) & loop_set):
-        return fail("G3", "the split left no F2P case in P_loop — the fault "
-                          "would be invisible to the loop")
-    if not (set(f2p) & eval_set):
-        return fail("G3", "the split left no F2P case in P_eval — a non-repair "
-                          "would be undetectable at scoring time")
+    if cfg.holdout > 0:
+        # G3 exists ONLY because a holdout exists. Without one, `P_loop` is the
+        # whole pool, `f2p` is non-empty by G1, and both checks are satisfied by
+        # construction — so asserting them would be theatre.
+        if not (set(f2p) & loop_set):
+            return fail("G3", "the split left no F2P case in P_loop — the fault "
+                              "would be invisible to the loop")
+        if not (set(f2p) & eval_set):
+            return fail("G3", "the split left no F2P case in P_eval — a "
+                              "non-repair would be undetectable at scoring time")
     if len(p_loop) < cfg.min_loop_pool:
-        # At the default of 1 this is the floor — an empty `P_loop` is a task no
-        # policy can schedule — and the two F2P checks above already imply it,
-        # so it fires only if one of them is ever weakened. Above 1 it is the
-        # old pre-treatment screen, opt-in: a screen cannot be undone after the
-        # run, while the band `analyse` draws from `|P_loop|` can be re-cut any
-        # number of ways.
+        # At the default of 1 this is the floor — a pool no policy can schedule.
+        # G1 already implies it (`pool_names` non-empty), so it fires only if
+        # that is ever weakened. Above 1 it is the old pre-treatment screen,
+        # opt-in: a screen cannot be undone after the run, while the band
+        # `analyse` draws from `|P_loop|` can be re-cut any number of ways.
         return fail("G3", f"|P_loop|={len(p_loop)} < {cfg.min_loop_pool} usable probes")
     gates["G3"] = True
 
@@ -433,6 +481,15 @@ def freeze(
     for t in results:
         if t.admitted:
             by_group.setdefault(t.group, []).append(t)
+    if not cfg.dedup_per_group:
+        # Off by default. Correlated cells are a CLUSTERING problem, and
+        # `report/analyse.py` resamples coding tasks, so dropping faults to buy
+        # independence throws away data for something the bootstrap already
+        # handles. `--dedup-per-group` restores the old behaviour.
+        for members in by_group.values():
+            for t in members:
+                t.gates["G4"] = True
+        by_group = {}
     for group, members in by_group.items():
         if len(members) == 1:
             members[0].gates["G4"] = True

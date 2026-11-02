@@ -174,6 +174,25 @@ def render(summary: dict[str, Any], *, title: str = "CASTER run report",
                   f'{r["success_at_b"]:.1%}']
                  for r in d["arms"]], numeric=(2, 3, 4, 5)))
 
+    by_era = summary.get("arms_by_era", {})
+    if by_era:
+        cut = html.escape(str(summary.get("date_cutoff", "")))
+        parts.append("<h2>Contest era (post hoc)</h2>")
+        parts.append(f'<p class="note">G5 used to delete every contest before '
+                     f'<code>{cut}</code> <em>before</em> the run, which assumes '
+                     f'contamination away rather than measuring it. Both eras now '
+                     f'run, and <code>pre-cutoff</code> is the corpus that cut '
+                     f'removed: a gap between the two bands is the contamination '
+                     f'effect, as a number rather than an assertion.</p>')
+        parts.append(_table(
+            ["era", "tasks", "cells", "success@B (no-mem)", "best arm by cpu/episode"],
+            [[b, d["tasks"], d["cells"],
+              next((f'{r["success_at_b"]:.1%}' for r in d["arms"]
+                    if r["policy"] == "no-mem"), "—"),
+              html.escape(min(d["arms"], key=lambda r: r["cpu_s_mean"])["policy"])
+              if d["arms"] else "—"]
+             for b, d in by_era.items()], numeric=(1, 2, 3)))
+
     # ── the main tables ─────────────────────────────────────────────────────
     arms = summary.get("arms", [])
     survival = summary.get("survival", {})

@@ -15,8 +15,10 @@ only an observation can be phrased as a positive requirement — "produce exactl
 this output on this input" rather than "do not do that again". So the scheduler
 and the prompt contract ship as one system.
 
-The design decisions, with the reason for each, are in
-**[`docs/DECISIONS.md`](docs/DECISIONS.md)**.
+How to actually run it — setup, the pipeline stage by stage, sharding across
+machines, and what to do when something fails — is in
+**[`docs/RUNNING.md`](docs/RUNNING.md)**. The design decisions, with the reason
+for each, are in **[`docs/DECISIONS.md`](docs/DECISIONS.md)**.
 
 ---
 
@@ -27,7 +29,7 @@ pip install -e ".[dev]"
 python3 scripts/fetch_condefects.py         # clones Code/; tells you where Test.zip is
 
 caster preflight                            # first thing in any session; budget 0
-caster freeze                               # G1–G6, the P_loop/P_eval split, pool_sha256
+caster freeze                               # the corpus gate, pool order, pool_sha256
 caster propose  --policies no-mem --budget 20
 caster audit    --concurrency 4             # the full-scan pass: kill matrix + cost table
 caster evaluate --policies km,natural,random,fault-record,cost-only,kill-only
@@ -41,7 +43,7 @@ persistence and a shard fleet.
 
 | verb | what it does |
 |---|---|
-| `freeze` | applies the corpus gate, splits `P_loop`/`P_eval`, writes `pool/tasks.json` + `pool_sha256`. No pool-size screen: `analyse` bands by `\|P_loop\|` after the run |
+| `freeze` | applies the corpus gate, writes `pool/tasks.json` + `pool_sha256`. **No pre-treatment screen runs by default** — every sound fault is admitted, the oracle is the whole pool, and `analyse` bands by pool size and contest era afterwards. `--holdout 0.3` draws a `P_eval` for measuring overfitting |
 | `propose` | **phase 1** — fills the response cache and the patch store. Block A only |
 | `evaluate` | **phase 2** — walks `(task × seed × policy)`, resumably, writing atomic cells. `--from-cache-only` refuses to call the model; `--replay-only` refuses to run the sandbox too; `--control` walks the unfiltered control arm |
 | `audit` | the dedicated full-scan pass: the kill matrix and the frozen cost table |
@@ -65,7 +67,7 @@ caster/
   bench/            the ONLY module that knows a benchmark
     protocol.py       OracleAdapter — eight dimensions, six functions
     adapter.py        ConDefects
-    gate.py           G1–G6, the F2P/P2P split, scoring on P_eval
+    gate.py           the corpus gate; the opt-in P_eval split and its scoring
     cover.py          reference coverage, traced in a subprocess
   exec/
     sandbox.py        one program, one input, hard timeout, getrusage CPU
@@ -187,7 +189,7 @@ likely to go first:
 pytest -q
 ```
 
-`pytest` runs **CASTER's own unit tests** — not the experiment. 232 of them,
+`pytest` runs **CASTER's own unit tests** — not the experiment. 238 of them,
 seconds, no network and no model. They are unrelated to the ~1,244-fault corpus
 that `caster freeze` produces and `caster evaluate` walks.
 

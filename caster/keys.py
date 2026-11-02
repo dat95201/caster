@@ -305,7 +305,8 @@ NONKEY_FLAGS: frozenset[str] = frozenset({
     # `pool_sha256` and recorded in the manifest — not into a per-cell key. The
     # same (task, seed, policy) is the same cell whichever list named it.
     "condefects_root", "test_dir", "overwrite", "date_min", "lines_max",
-    "min_pool", "eval_ratio", "control_size", "pool_order", "pool_seed",
+    "min_pool", "holdout", "control_size", "pool_order", "pool_seed",
+    "dedup_per_group",
 })
 
 

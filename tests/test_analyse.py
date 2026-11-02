@@ -270,3 +270,39 @@ def test_arms_by_pool_band_reproduces_the_screen_without_rerunning(tmp_path):
     assert out["standard"]["tasks"] == 1 and out["standard"]["pool_median"] == 40
     # The control-arm cell is not in the frozen pool and must not be banded.
     assert sum(d["cells"] for d in out.values()) == 3
+
+
+def test_the_cluster_is_the_coding_task_not_the_fault():
+    """Two faults of one AtCoder problem share a test pool, so their cells are
+    correlated and must move in and out of a bootstrap draw together.
+
+    With one cluster every resample is the same draw, so the interval collapses
+    — which is the honest answer for a corpus of one problem. Clustering on the
+    fault instead would report a tight interval built from correlated cells,
+    and that is the error G4 used to avoid by throwing faults away.
+    """
+    assert analyse.cluster_of("abc221_f/40898300") == "abc221_f"
+    rows = [row(task="abc221_f/1", cpu_s=1.0, killed_by="a"),
+            row(task="abc221_f/2", cpu_s=9.0, killed_by="a")]
+    cs = analyse.cells(rows, budget=4)
+    out = analyse.bootstrap_cpu(cs, "km", iterations=200)
+    assert out["clusters"] == 1, "both faults are one AtCoder problem"
+    assert out["ci95"] == [pytest.approx(5.0), pytest.approx(5.0)]
+
+
+def test_arms_by_era_replaces_the_contamination_cutoff():
+    """`pre-cutoff` is the corpus `--date-min 2022-04-01` used to delete. Running
+    it and reporting it beside `post-cutoff` turns "the model may have memorised
+    these" from an assumption into a comparison."""
+    assert analyse.era_of("2021-12-31") == "pre-cutoff"
+    assert analyse.era_of("2022-04-01") == "post-cutoff"
+    assert analyse.era_of(None) == "undated"
+
+    dates = {"old": "2020-01-01", "new": "2024-01-01"}
+    rows = [row(task="old", killed_by="a", cpu_s=1.0),
+            row(task="new", killed_by="a", cpu_s=2.0),
+            row(task="ctl", killed_by="a", cpu_s=9.0)]   # not in the frozen pool
+    out = analyse.arms_by_era(analyse.cells(rows, budget=4), dates)
+    assert list(out) == ["pre-cutoff", "post-cutoff"]
+    assert out["pre-cutoff"]["arms"][0]["cpu_s_mean"] == pytest.approx(1.0)
+    assert sum(d["cells"] for d in out.values()) == 2

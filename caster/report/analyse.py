@@ -39,10 +39,16 @@ quietly reporting the narrow interval.
 ## The cluster, and why it is the coding task
 
 Several faults can share one AtCoder problem and therefore one test pool, so
-their cells are correlated. G4 keeps at most one fault per problem, which makes
-problems and faults the same unit — but a bootstrap that resampled *rows* would
-still treat the rounds of one episode as independent. The cluster is the
-**task**, resampled with replacement.
+their cells are correlated. The cluster is the **coding task** — the AtCoder
+problem, `abc221_f` in `abc221_f/40898300` — resampled with replacement, which
+puts every fault of one problem in or out of a draw together.
+
+This is why the gate no longer drops faults to buy independence (G4, now
+`--dedup-per-group`). Dropping data is one answer to correlated observations;
+clustering on the shared unit is the better one, because it keeps every fault
+and the assumption holds where it is actually needed. A bootstrap that
+resampled *rows* would still treat the rounds of one episode as independent,
+which is the mistake underneath both.
 """
 from __future__ import annotations
 
@@ -271,6 +277,27 @@ def pool_band_of(n: int) -> str:
     return "standard"
 
 
+def cluster_of(task: str) -> str:
+    """The AtCoder problem a fault belongs to — `abc221_f/40898300` -> `abc221_f`.
+
+    The unit the bootstrap resamples. Faults of one problem share a test pool,
+    so their cells are correlated and must move together.
+    """
+    return task.split("/")[0]
+
+
+#: The contamination cut G5 used to apply BEFORE the run. A cutoff *assumes*
+#: contamination away; running every era and banding by contest date
+#: **measures** it, and the pre-cutoff band is the number a reviewer wants.
+DATE_CUTOFF = "2022-04-01"
+
+
+def era_of(date: str | None, cutoff: str = DATE_CUTOFF) -> str:
+    if not date:
+        return "undated"
+    return "pre-cutoff" if date < cutoff else "post-cutoff"
+
+
 def load_pool_sizes(pool_dir: pathlib.Path) -> dict[str, int]:
     """`|P_loop|` per admitted task, read from the frozen corpus.
 
@@ -287,6 +314,54 @@ def load_pool_sizes(pool_dir: pathlib.Path) -> dict[str, int]:
                 for n, t in doc.get("tasks", {}).items() if t.get("admitted")}
     except (json.JSONDecodeError, TypeError, AttributeError):
         return {}
+
+
+def load_task_dates(pool_dir: pathlib.Path) -> dict[str, str]:
+    """Contest date per admitted task, from the frozen corpus."""
+    path = pool_dir / "tasks.json"
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return {n: t["date"] for n, t in doc.get("tasks", {}).items()
+                if t.get("admitted") and t.get("date")}
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return {}
+
+
+def _arms_by(cs: Sequence[Cell], key: dict[str, Any],
+             band: Any, order: Sequence[str]) -> dict[str, Any]:
+    """The arm table split by any pre-run property of the task.
+
+    Every screen the gate used to apply lands here: decided after the run,
+    unable to change the corpus, and re-cuttable without re-running anything.
+    Cells whose task is not in the frozen pool — the control arm's — are left
+    out, since pooling them would restore the correlation that arm measures.
+    """
+    if not key:
+        return {}
+    groups: dict[str, list[Cell]] = {}
+    for c in cs:
+        if c.task in key:
+            groups.setdefault(band(key[c.task]), []).append(c)
+    out: dict[str, Any] = {}
+    for name in order:
+        group = groups.get(name) or []
+        if group:
+            out[name] = {"tasks": len({c.task for c in group}),
+                         "cells": len(group), "arms": arm_table(group)}
+    return out
+
+
+def arms_by_era(cs: Sequence[Cell], dates: dict[str, str]) -> dict[str, Any]:
+    """RQ1 per contest era — what G5's cutoff used to decide in advance.
+
+    `pre-cutoff` is the corpus `--date-min 2022-04-01` deleted. Reporting it
+    beside `post-cutoff` turns "the model may have memorised these" from an
+    assumption into a comparison.
+    """
+    return _arms_by(cs, dict(dates), era_of,
+                    ("pre-cutoff", "post-cutoff", "undated"))
 
 
 def arms_by_pool_band(cs: Sequence[Cell],
@@ -416,9 +491,13 @@ def bootstrap_cpu(
     group = [c for c in cs if c.policy == policy]
     if not group:
         return {"policy": policy, "n": 0}
+    # The CLUSTER is the coding task, not the fault: faults of one AtCoder
+    # problem share a test pool, so they move in and out of a draw together.
+    # With G4 off several faults can land in one cluster, which is exactly what
+    # makes dropping them unnecessary.
     by_task: dict[str, list[Cell]] = {}
     for c in group:
-        by_task.setdefault(c.task, []).append(c)
+        by_task.setdefault(cluster_of(c.task), []).append(c)
     tasks = sorted(by_task)
     rng = random.Random(seed)
 
@@ -629,6 +708,7 @@ def summarise(rows: Sequence[RoundRecord], *, budget: int,
     """
     cs = cells(rows, budget=budget)
     pool_sizes = load_pool_sizes(pool_dir) if pool_dir else {}
+    task_dates = load_task_dates(pool_dir) if pool_dir else {}
     frozen_rates = load_repair_rates(pool_dir) if pool_dir else {}
     computed = repair_rates(cs)
     rates = {**computed, **frozen_rates}       # the frozen value wins
@@ -652,6 +732,9 @@ def summarise(rows: Sequence[RoundRecord], *, budget: int,
         # The pool-size screen G3 used to apply, moved after the run.
         "pool_bands": {t: pool_band_of(n) for t, n in sorted(pool_sizes.items())},
         "arms_by_pool_band": arms_by_pool_band(cs, pool_sizes),
+        # The contamination cut G5 used to apply, moved after the run.
+        "arms_by_era": arms_by_era(cs, task_dates),
+        "date_cutoff": DATE_CUTOFF,
         "arms": arm_table(cs),
         "decomposition": decomposition(cs),
         "survival": {

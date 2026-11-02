@@ -470,7 +470,7 @@ def test_the_control_arm_is_runnable_not_merely_marked(adapter):
     from caster.bench.gate import GateConfig, control_tasks, freeze, install
 
     doc = freeze(adapter, cfg=GateConfig(min_loop_pool=1000, date_min="2000-01-01",
-                                         control_size=2))
+                                         holdout=0.30, control_size=2))
     names = control_tasks(doc)
     assert names
     for n in names:

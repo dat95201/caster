@@ -123,9 +123,21 @@ def build_parser() -> argparse.ArgumentParser:
                         "pre-treatment screen — `--min-pool 20` reproduces the "
                         "former corpus; otherwise `analyse` bands by pool size "
                         "after the run")
-    p.add_argument("--date-min", dest="date_min", default="2022-04-01")
-    p.add_argument("--lines-max", dest="lines_max", type=int, default=120)
-    p.add_argument("--eval-ratio", dest="eval_ratio", type=float, default=0.30)
+    p.add_argument("--date-min", dest="date_min", default=None,
+                   help="G5 contamination cut (unset = no cut; `analyse` bands "
+                        "by contest era instead)")
+    p.add_argument("--lines-max", dest="lines_max", type=int, default=None,
+                   help="G6 source-length screen (unset = no ceiling; "
+                        "truncation shows up as context_overflow)")
+    p.add_argument("--dedup-per-group", dest="dedup_per_group",
+                   action="store_true",
+                   help="G4: keep one fault per coding task (default off; the "
+                        "cluster bootstrap resamples coding tasks instead)")
+    p.add_argument("--holdout", dest="holdout", type=float, default=0.0,
+                   help="hold this fraction of each pool out of the loop "
+                        "(default 0: the oracle is the WHOLE pool and "
+                        "success@B is a plausible-patch rate). 0.3 restores "
+                        "the P_loop/P_eval split for measuring overfitting")
     p.add_argument("--control-size", dest="control_size", type=int, default=0,
                    help="the unfiltered control arm over G1-only survivors")
     p.add_argument("--pool-order", dest="pool_order",
@@ -334,7 +346,8 @@ def cmd_freeze(args: argparse.Namespace) -> int:
     if not names:
         raise SystemExit(adapter.setup_hint)
     cfg = GateConfig(min_loop_pool=args.min_pool, date_min=args.date_min,
-                     lines_max=args.lines_max, eval_ratio=args.eval_ratio,
+                     dedup_per_group=args.dedup_per_group,
+                     lines_max=args.lines_max, holdout=args.holdout,
                      control_size=args.control_size, pool_order=args.pool_order,
                      seed=args.pool_seed)
     out = paths.POOL_DIR / "tasks.json"
@@ -740,9 +753,18 @@ def cmd_preflight(args: argparse.Namespace) -> int:
         if doc.get("candidate_order_sha256") and doc.get("selected_sha256"):
             notes.append(f"pool_sha256 {doc['pool_sha256'][:12]} "
                          f"({doc['funnel']['admitted']}/{doc['funnel']['examined']} admitted)")
-        if not any(t.get("p_eval") for t in doc.get("tasks", {}).values()):
-            failures.append("P_eval is empty in the frozen corpus — it has to "
-                            "exist before the first reported number")
+        asked = float((doc.get("config") or {}).get("holdout") or 0.0)
+        if asked > 0 and not any(t.get("p_eval")
+                                 for t in doc.get("tasks", {}).values()):
+            # Only a failure when one was ASKED for. At `--holdout 0` the oracle
+            # is the whole pool by design, and `success@B` is a plausible-patch
+            # rate rather than a correctness rate.
+            failures.append("--holdout was set but P_eval is empty in the "
+                            "frozen corpus — it has to exist before the first "
+                            "reported number")
+        elif asked == 0:
+            notes.append("holdout 0 — oracle is the whole pool; success@B is a "
+                         "PLAUSIBLE-patch rate, not a correctness rate")
 
     for name, p in (("response cache", paths.CACHE_DIR),
                     ("verdict store", paths.VERDICT_DIR),

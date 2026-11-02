@@ -90,7 +90,7 @@ def frozen(adapter, tmp_path: pathlib.Path) -> dict[str, Any]:
     from caster.bench.gate import GateConfig, freeze, install
 
     doc = freeze(adapter, cfg=GateConfig(min_loop_pool=6, date_min="2000-01-01",
-                                         eval_ratio=0.30, seed=1))
+                                         holdout=0.30, seed=1))
     install(adapter, doc)
     return doc
 
