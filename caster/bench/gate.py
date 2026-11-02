@@ -95,6 +95,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
 import pathlib
 import random
 from typing import Any, Iterable, Sequence
@@ -209,6 +210,21 @@ class FrozenTask:
         d = dataclasses.asdict(self)
         d["split_counts"] = self.split_counts
         return d
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "FrozenTask":
+        """Rebuild one checkpointed fault. `split_counts` is derived, not stored.
+
+        Unknown keys are dropped rather than raising: a checkpoint written by an
+        older build should cost a re-gate of that fault at worst, never the
+        whole resume.
+        """
+        fields = {f.name for f in dataclasses.fields(cls)}
+        kw = {k: v for k, v in d.items() if k in fields}
+        for k in ("pool", "f2p", "p2p", "p_loop", "p_eval"):
+            if k in kw and kw[k] is not None:
+                kw[k] = tuple(kw[k])
+        return cls(**kw)
 
 
 def _stable_reference(adapter: ConDefectsAdapter, task_name: str,
@@ -458,20 +474,87 @@ def freeze(
     proof that the freeze step dropped nothing of its own.
     """
     names = sorted(task_names) if task_names is not None else sorted(adapter.tasks())
-    candidate_order_sha256 = hashlib.sha256("\n".join(names).encode()).hexdigest()
+    results = gate_many(adapter, names, cfg, progress=progress)
+    return assemble(adapter, names, results, cfg)
 
-    results_by_name: dict[str, FrozenTask] = {}
-    results: list[FrozenTask] = []
-    for i, name in enumerate(names, 1):
-        if progress is not None:
-            progress(i, len(names), name)
-        try:
-            results.append(gate_one(adapter, name, cfg))
-        except (FileNotFoundError, KeyError) as exc:
-            results.append(FrozenTask(name=name, group=name.split("/")[0],
-                                      admitted=False, failed_gate="G2",
-                                      reason=f"{type(exc).__name__}: {exc}"))
-        results_by_name[name] = results[-1]
+
+def gate_one_safe(adapter: ConDefectsAdapter, name: str,
+                  cfg: GateConfig) -> FrozenTask:
+    """`gate_one`, with a missing or malformed checkout recorded as a G2 reject.
+
+    A fault that raises is a fault whose test data is not intact, which is what
+    G2 is. Letting it propagate would end the walk on one bad checkout and lose
+    every result before it.
+    """
+    try:
+        return gate_one(adapter, name, cfg)
+    except (FileNotFoundError, KeyError) as exc:
+        return FrozenTask(name=name, group=name.split("/")[0], admitted=False,
+                          failed_gate="G2", reason=f"{type(exc).__name__}: {exc}")
+
+
+def gate_many(adapter: ConDefectsAdapter, names: Sequence[str],
+              cfg: GateConfig = GateConfig(), *, progress: Any = None,
+              done_path: pathlib.Path | None = None) -> list[FrozenTask]:
+    """Gate each fault in `names`, resumably.
+
+    `done_path` is an append-only JSONL of finished faults, flushed per fault.
+    A re-issued command reads it, skips what it holds and continues — the same
+    discipline `evaluate` gets from `cells.done`, and the reason a freeze that
+    runs for hours is not lost to a closed laptop.
+
+    Per-fault work is INDEPENDENT: G4 and the control arm are cross-fault and
+    belong to `assemble`, which is what makes a sharded freeze sound.
+    """
+    done: dict[str, FrozenTask] = {}
+    if done_path is not None and done_path.is_file():
+        for line in done_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                done[rec["name"]] = FrozenTask.from_dict(rec)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue   # a line torn by a kill is simply redone
+    out: list[FrozenTask] = []
+    handle = None
+    if done_path is not None:
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = done_path.open("a", encoding="utf-8")
+    try:
+        for i, name in enumerate(names, 1):
+            if progress is not None:
+                progress(i, len(names), name)
+            hit = done.get(name)
+            if hit is not None:
+                out.append(hit)
+                continue
+            t = gate_one_safe(adapter, name, cfg)
+            out.append(t)
+            if handle is not None:
+                handle.write(json.dumps(t.as_dict(), sort_keys=True) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+    finally:
+        if handle is not None:
+            handle.close()
+    return out
+
+
+def assemble(adapter: ConDefectsAdapter, names: Sequence[str],
+             results: Sequence[FrozenTask],
+             cfg: GateConfig = GateConfig()) -> dict[str, Any]:
+    """The cross-fault half: G4, the control arm, the order and the digests.
+
+    Separate from `gate_many` because every step here needs the WHOLE corpus —
+    G4 dedups across faults of one coding task, the control arm samples over
+    all G1-only survivors, and `pool_sha256` covers the complete pool. Running
+    any of them on a shard would produce a different corpus per shard.
+    """
+    names = sorted(names)
+    results = list(results)
+    candidate_order_sha256 = hashlib.sha256("\n".join(names).encode()).hexdigest()
+    results_by_name: dict[str, FrozenTask] = {t.name: t for t in results}
 
     # ── G4 — one fault per coding task ──────────────────────────────────────
     # A **seeded uniform choice**, deliberately not "the fault with the largest

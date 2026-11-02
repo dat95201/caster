@@ -491,3 +491,37 @@ held-out probes. Steering is half the thesis, so the comparison between
 `km+steer`, `km+steer-sample` and `km+steer-noreq` on *overfitting* (as opposed
 to on CPU) requires a `--holdout` pass. That pass can be a small subset of
 tasks: it answers a different question from RQ1 and does not need the full grid.
+
+## 24. `freeze` checkpoints per fault, and shards
+
+`caster/bench/gate.py::gate_many` / `assemble`, `caster freeze --first/--last/--shard/--assemble`.
+
+Measured on this corpus a fault costs ~9–23 s to gate — one reference run and
+one buggy run per case, and nothing in it is cached across faults. At ~2,900
+Python faults that is a walk of several hours, single-threaded. Two properties
+stop being optional at that length, and `freeze` had neither.
+
+**Checkpoint.** Each `FrozenTask` is appended and fsynced to
+`pool/gate/sNN.jsonl` the moment it is gated, and a re-issued command skips
+what the file holds. A kill costs the fault in flight, never the walk behind
+it. A line torn by that kill fails to parse and is simply re-gated, so the
+checkpoint needs no separate integrity record. This is the discipline
+`evaluate` already had through `cells.done`; the gate was the one stage
+without it.
+
+**Shard.** The per-fault work is independent, so a range can be cut. What is
+NOT independent is everything after it: G4 dedups across the faults of one
+coding task, the control arm samples over all G1-only survivors, and
+`pool_sha256` covers the whole pool. Running any of those in a shard would
+give each shard a different corpus. So the split is exactly there —
+`gate_many` is per-fault and shardable, `assemble` is cross-fault and runs
+once — and `tests/test_gate.py` asserts a two-shard freeze reproduces the
+single-pass `pool_sha256`, `pool_order` and funnel.
+
+`--assemble` refuses on a gap. A funnel computed over missing faults is wrong
+in a way nothing downstream would notice, and a `pool_sha256` over a partial
+corpus is a digest of something nobody can name.
+
+`--dry-run` prints the candidate count and exits. It is the one authority on
+how to cut ranges, for the same reason `scripts/fleet.sh` reads the universe
+size out of `evaluate --dry-run` rather than writing it down.

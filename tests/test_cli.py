@@ -114,6 +114,14 @@ def _run(*argv: str) -> int:
     return cli.main(list(argv))
 
 
+def _capture(capsys, *argv: str) -> str:
+    """stdout of one command, from its first `{` — `paths.announce` prints first."""
+    capsys.readouterr()
+    assert _run(*argv) == 0
+    out = capsys.readouterr().out
+    return out[out.index("{"):]
+
+
 def test_freeze_then_evaluate_then_merge_then_analyse_then_report(wired, run_dir, capsys):
     assert _run("freeze", "--min-pool", "6", "--date-min", "2000-01-01",
                 "--condefects-root", "x") == 0
@@ -306,3 +314,51 @@ def test_smoke_detects_drift(wired, run_dir, capsys):
     }), encoding="utf-8")
     assert _run("smoke", "--budget", "2") == 1
     assert "drifted" in capsys.readouterr().err
+
+
+def test_freeze_shards_then_assembles(wired, run_dir, capsys):
+    """Two shards, then one assemble — and the result must equal a single pass.
+
+    A shard writes only its gate records. `tasks.json` appears at `--assemble`,
+    because G4, the control arm and `pool_sha256` need the whole corpus.
+    """
+    import json
+
+    n = json.loads(_capture(capsys, "freeze", "--dry-run"))["universe"]
+    assert n >= 2
+    half = n // 2
+    assert _run("freeze", "--first", "1", "--last", str(half), "--shard", "0",
+                "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    assert not (run_dir.POOL_DIR / "tasks.json").exists(), "a shard writes no corpus"
+    assert _run("freeze", "--first", str(half + 1), "--last", str(n), "--shard", "1",
+                "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+
+    assert _run("freeze", "--assemble", "--min-pool", "6",
+                "--date-min", "2000-01-01") == 0
+    sharded = json.loads(capsys.readouterr().out)
+    assert sharded["shards"] == 2
+    doc = json.loads((run_dir.POOL_DIR / "tasks.json").read_text(encoding="utf-8"))
+
+    assert _run("freeze", "--overwrite", "--min-pool", "6",
+                "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    whole = json.loads((run_dir.POOL_DIR / "tasks.json").read_text(encoding="utf-8"))
+    assert doc["pool_sha256"] == whole["pool_sha256"]
+    assert doc["pool_order"] == whole["pool_order"]
+
+
+def test_assemble_refuses_a_gap(wired, run_dir, capsys):
+    """A corpus assembled over a missing shard has a wrong funnel and a
+    `pool_sha256` that means nothing. It must fail loudly, not quietly."""
+    import json
+    import pytest as _pytest
+
+    n = json.loads(_capture(capsys, "freeze", "--dry-run"))["universe"]
+    assert _run("freeze", "--first", "1", "--last", "1", "--shard", "0",
+                "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    if n > 1:
+        with _pytest.raises(SystemExit) as e:
+            _run("freeze", "--assemble", "--min-pool", "6", "--date-min", "2000-01-01")
+        assert "no gate record" in str(e.value)

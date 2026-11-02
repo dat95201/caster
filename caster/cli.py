@@ -145,6 +145,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pool-seed", dest="pool_seed", type=int, default=20_260_101)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--first", type=int, default=None,
+                   help="1-based inclusive range start over the candidates")
+    p.add_argument("--last", type=int, default=None,
+                   help="1-based inclusive range end")
+    p.add_argument("--shard", type=int, default=0,
+                   help="this shard's index; its gate records go to "
+                        "pool/gate/sNN.jsonl")
+    p.add_argument("--assemble", action="store_true",
+                   help="build tasks.json from every shard's checkpoint. G4, "
+                        "the control arm and pool_sha256 need the whole corpus, "
+                        "so they happen here and not in a shard")
+    p.add_argument("--dry-run", dest="dry_run", action="store_true",
+                   help="print the candidate count and exit; the one authority "
+                        "on how to cut ranges")
 
     # 2 ── propose  (phase 1)
     p = sub.add_parser("propose", help="phase 1: fill the response cache and the patch store")
@@ -335,8 +349,13 @@ def _grid(args: argparse.Namespace, frozen: dict[str, Any]) -> Any:
 # ── the verbs ────────────────────────────────────────────────────────────────
 
 
+def gate_dir() -> pathlib.Path:
+    """Where a freeze checkpoints. One JSONL per shard, appended per fault."""
+    return paths.POOL_DIR / "gate"
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
-    from caster.bench.gate import GateConfig, freeze, write
+    from caster.bench.gate import FrozenTask, GateConfig, assemble, gate_many, write
 
     paths.announce("freeze")
     adapter = _adapter(args)
@@ -351,24 +370,71 @@ def cmd_freeze(args: argparse.Namespace) -> int:
                      control_size=args.control_size, pool_order=args.pool_order,
                      seed=args.pool_seed)
     out = paths.POOL_DIR / "tasks.json"
-    if out.exists() and not args.overwrite:
-        raise SystemExit(f"{out} exists; pass --overwrite to replace it. A corpus "
-                         f"silently re-frozen is a corpus nobody can reproduce.")
-
     t0 = time.time()
+
+    # The ONE authority on how big a freeze is, so a fleet never cuts ranges
+    # past the end of it — the contract `evaluate --dry-run` already has.
+    if args.dry_run:
+        print(json.dumps({"universe": len(names), "first": 1, "last": len(names)},
+                         indent=2))
+        return 0
 
     def progress(i: int, n: int, name: str) -> None:
         if i % 25 == 0 or i == n:
             print(f"  gate {i}/{n}  {name}", file=sys.stderr, flush=True)
 
-    doc = freeze(adapter, names, cfg, progress=progress)
+    if not args.assemble:
+        lo = max(1, args.first or 1)
+        hi = min(len(names), args.last or len(names))
+        chunk = names[lo - 1:hi]
+        if not chunk:
+            raise SystemExit(f"--first {lo} --last {hi} selects nothing of "
+                             f"{len(names)} candidates")
+        done_path = gate_dir() / f"s{int(args.shard):02d}.jsonl"
+        gate_many(adapter, chunk, cfg, progress=progress, done_path=done_path)
+        if args.first or args.last or args.shard:
+            # A shard owns no corpus: G4, the control arm and `pool_sha256` all
+            # need every fault, so the document is built once, afterwards.
+            print(json.dumps({
+                "shard": int(args.shard), "first": lo, "last": hi,
+                "gated": len(chunk), "checkpoint": str(done_path),
+                "seconds": round(time.time() - t0, 1),
+                "next": "caster freeze --assemble (once every shard is done)",
+            }, indent=2))
+            return 0
+
+    if out.exists() and not args.overwrite:
+        raise SystemExit(f"{out} exists; pass --overwrite to replace it. A corpus "
+                         f"silently re-frozen is a corpus nobody can reproduce.")
+
+    seen: dict[str, FrozenTask] = {}
+    files = sorted(gate_dir().glob("s*.jsonl"))
+    for path in files:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+                seen[rec["name"]] = FrozenTask.from_dict(rec)
+            except (json.JSONDecodeError, KeyError, TypeError):
+                continue
+    missing = [n for n in names if n not in seen]
+    if missing:
+        raise SystemExit(
+            f"{len(missing)} of {len(names)} candidates have no gate record "
+            f"(e.g. {', '.join(missing[:5])}). A corpus assembled over a gap has "
+            f"a wrong funnel and a pool_sha256 that means nothing. Re-run the "
+            f"shard that covers them."
+        )
+    doc = assemble(adapter, names, [seen[n] for n in names], cfg)
     write(doc, out)
-    f = doc["funnel"]
     print(json.dumps({
         "pool_sha256": doc["pool_sha256"],
         "candidate_order_sha256": doc["candidate_order_sha256"],
         "selected_sha256": doc["selected_sha256"],
-        "funnel": f, "seconds": round(time.time() - t0, 1), "out": str(out),
+        "shards": len(files),
+        "funnel": doc["funnel"], "seconds": round(time.time() - t0, 1),
+        "out": str(out),
     }, indent=2))
     return 0
 

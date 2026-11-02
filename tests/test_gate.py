@@ -396,3 +396,64 @@ def test_no_screen_is_switched_off_by_a_falsy_sentinel():
     for guard in ("if cfg.lines_max and", "if cfg.date_min and",
                   "if cfg.min_loop_pool and"):
         assert guard not in src, f"truthiness guard back in gate_one: {guard}"
+
+
+# ── a freeze that survives a closed laptop ───────────────────────────────────
+
+
+def test_gate_many_resumes_from_its_checkpoint(adapter, tmp_path, monkeypatch):
+    """A freeze runs for hours; without a checkpoint one Ctrl-C costs all of it.
+
+    The record is appended and fsynced PER FAULT, so what is lost is the fault
+    in flight, never the walk behind it — the discipline `evaluate` gets from
+    `cells.done`.
+    """
+    from caster.bench import gate as gate_mod
+
+    names = sorted(adapter.tasks())
+    done = tmp_path / "gate" / "s00.jsonl"
+    cfg = GateConfig(date_min="2000-01-01")
+
+    first = gate_mod.gate_many(adapter, names, cfg, done_path=done)
+    assert len(done.read_text(encoding="utf-8").strip().splitlines()) == len(names)
+
+    calls = []
+    real = gate_mod.gate_one
+    monkeypatch.setattr(gate_mod, "gate_one",
+                        lambda *a, **k: (calls.append(a[1]), real(*a, **k))[1])
+    again = gate_mod.gate_many(adapter, names, cfg, done_path=done)
+    assert calls == [], "a resumed fault must not be re-gated"
+    assert [t.name for t in again] == [t.name for t in first]
+    assert [t.admitted for t in again] == [t.admitted for t in first]
+
+
+def test_a_sharded_freeze_is_the_same_corpus_as_a_single_pass(adapter):
+    """The whole point: cutting the walk must not cut the corpus.
+
+    G4, the control arm and `pool_sha256` all need every fault, so they live in
+    `assemble` and run once. If a shard did any of them, each shard would
+    produce a different corpus and the digests would not agree.
+    """
+    from caster.bench import gate as gate_mod
+
+    names = sorted(adapter.tasks())
+    cfg = GateConfig(date_min="2000-01-01")
+    whole = freeze(adapter, names, cfg)
+
+    half = max(1, len(names) // 2)
+    parts = (gate_mod.gate_many(adapter, names[:half], cfg)
+             + gate_mod.gate_many(adapter, names[half:], cfg))
+    sharded = gate_mod.assemble(adapter, names, parts, cfg)
+
+    assert sharded["pool_sha256"] == whole["pool_sha256"]
+    assert sharded["pool_order"] == whole["pool_order"]
+    assert sharded["selected_sha256"] == whole["selected_sha256"]
+    assert sharded["funnel"] == whole["funnel"]
+
+
+def test_a_malformed_checkout_is_a_g2_reject_not_a_dead_walk(adapter):
+    """One bad fault must not end a six-hour walk and lose everything before it."""
+    from caster.bench import gate as gate_mod
+
+    t = gate_mod.gate_one_safe(adapter, "no_such/999", GateConfig())
+    assert not t.admitted and t.failed_gate == "G2" and t.reason

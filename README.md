@@ -189,7 +189,7 @@ likely to go first:
 pytest -q
 ```
 
-`pytest` runs **CASTER's own unit tests** — not the experiment. 238 of them,
+`pytest` runs **CASTER's own unit tests** — not the experiment. 243 of them,
 seconds, no network and no model. They are unrelated to the ~1,244-fault corpus
 that `caster freeze` produces and `caster evaluate` walks.
 

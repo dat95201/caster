@@ -125,6 +125,27 @@ caster freeze --limit 20
 `freeze` refuses to overwrite an existing `tasks.json` without `--overwrite`: a
 corpus silently re-frozen is a corpus nobody can reproduce.
 
+**It checkpoints, and it shards.** Every gated fault is appended and fsynced to
+`data/pool/gate/sNN.jsonl` as it finishes, so re-issuing the command skips what
+is already there — a closed laptop costs the fault in flight, not the walk
+behind it. Measured on this corpus, a fault costs ~9–23 s, so a full freeze runs
+for hours and neither property is optional.
+
+```bash
+caster freeze --dry-run                 # the ONE authority on the candidate count
+caster freeze --first 1   --last 358  --shard 0 &
+caster freeze --first 359 --last 716  --shard 1 &
+# ... one per core ...
+wait
+caster freeze --assemble                # builds tasks.json from every checkpoint
+```
+
+A shard writes **no corpus**. G4, the control arm and `pool_sha256` each need
+every fault, so they run once in `--assemble`; a shard that did any of them
+would produce a different corpus per shard. `--assemble` refuses if any
+candidate has no gate record, because a funnel computed over a gap is wrong and
+a `pool_sha256` over a gap means nothing.
+
 ### `propose` — phase 1, the model calls
 
 Fills the response cache and the patch store. **Block A only** — the 13 replay

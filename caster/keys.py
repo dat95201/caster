@@ -306,6 +306,7 @@ NONKEY_FLAGS: frozenset[str] = frozenset({
     # same (task, seed, policy) is the same cell whichever list named it.
     "condefects_root", "test_dir", "overwrite", "date_min", "lines_max",
     "min_pool", "holdout", "control_size", "pool_order", "pool_seed",
+    "assemble",
     "dedup_per_group",
 })
 
