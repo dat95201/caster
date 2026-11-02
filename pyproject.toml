@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "caster"
+version = "0.1.0"
+description = "Cost-aware scheduling of test evidence for LLM program repair"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "openai",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "matplotlib"]
+
+[project.scripts]
+caster = "caster.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["caster*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:caster.*"]

@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "The smoke universe is PINNED, not sampled. A smoke test whose corpus moves",
+    "cannot fail reproducibly, so this file is committed and these task names",
+    "are part of the test. Replace them with faults from your own frozen pool",
+    "the first time you run `caster freeze`, then commit the change AND the",
+    "`smoke/expected.json` that `caster smoke` writes beside it \u2014 without the",
+    "expectations committed, smoke is a liveness check, not a regression test.",
+    "",
+    "EVERY arm, deliberately. An arm missing from here is an arm whose first",
+    "breakage is found by a grid, not by a seconds-long CI gate.",
+    "",
+    "Rows go under data/<run>/smoke/, which `caster merge`'s glob cannot match."
+  ],
+  "tasks": [
+    "abc221_f/40898300",
+    "abc236_b/35961128"
+  ],
+  "seeds": [
+    0
+  ],
+  "policies": [
+    "full-suite",
+    "no-mem",
+    "natural",
+    "random",
+    "fault-record",
+    "cost-only",
+    "kill-only",
+    "coverage",
+    "km",
+    "km-cs-median",
+    "km-cs-q75",
+    "km-bucket",
+    "km-explore0",
+    "km+steer",
+    "km+steer-pass",
+    "km+exclusion",
+    "km+chat",
+    "km+steer-k1",
+    "km+steer-k3",
+    "km+steer-sample",
+    "km+steer-noreq",
+    "km+steer+vs"
+  ],
+  "model": ""
+}

@@ -1,0 +1,361 @@
+# Design decisions
+
+The choices below are binding on the implementation. Each one has a reason and,
+where it could be broken silently, a test named after what breaking it costs.
+Reversing a decision means changing this file in the same commit.
+
+Three of them are **schema or key changes, not flags** — they cannot be deferred
+past the first reported number without invalidating everything collected before.
+
+---
+
+## 1. The evaluation split: 30% held out, stratified, per task
+
+**30% of each task's pool is held out as `P_eval`, split within each of F2P and
+P2P, seeded from the task name, drawn once per fault and shared across models.**
+`caster/bench/gate.py::EVAL_RATIO`, `_split_stratified`.
+
+* **30%** because the ratio is upstream of the pool-size gate and of every
+  leakage figure. At a ≥20 `P_loop` threshold a 30% holdout means a fault needs
+  ~29 usable probes to be admitted, which the measured pool-size distribution
+  (median 31) supports.
+* **Stratified**, because a uniform split breaks in both directions. If `P_loop`
+  draws no F2P probe, round 1 accepts the unmodified faulty program and the
+  soundness gate's whole purpose is undone. If `P_eval` draws no F2P probe, it
+  cannot detect a non-repair and measures only regressions. A task whose split
+  empties either side is excluded, with that reason recorded.
+* **Shared across models**, because the split is a property of the *task*. The
+  replication question compares band curves across models; two models scored on
+  two different denominators would not be comparing curves, they would be
+  comparing denominators.
+* The four counts (`|F2P ∩ P_loop|`, `|F2P ∩ P_eval|`, `|P2P ∩ P_loop|`,
+  `|P2P ∩ P_eval|`) are recorded per task in `pool/tasks.json`.
+
+`P_eval` is never read by the loop — `exec/verify.scan` raises
+`HeldOutProbeLeak` if a held-out probe reaches it — and is executed only by
+`bench/gate.score_on_eval`, after the episode has ended.
+
+## 2. Timeouts are quarantined, not made deterministic
+
+**The sandbox keeps its wall-clock budget, and a `timeout` verdict is never
+served from the store.** `caster/exec/store.py`, `caster/exec/verify.py::_measure`.
+
+A deterministic step cap would make the verdict genuinely pure and let
+divergence be an unqualified halt — but it is **not the instrument the
+benchmark's own judge used**, so the admitted pool (gate G2: "neither version
+times out at the sandbox clock") would have to be re-derived under it, and every
+admitted/excluded count with it. That is a corpus-scale cost for a small base
+rate.
+
+So:
+
+* a `timeout` verdict is written to the store but `get()` never returns it, so
+  it never serves a scan and never satisfies `--replay-only`;
+* a fresh verdict that disagrees with a stored one, **where either side is a
+  timeout**, is re-run up to `REPEATS_BEFORE_HALT = 3` times on one host. A
+  *stable* disagreement raises `VerdictDivergence` and halts; a flip is appended
+  to `jitter.jsonl`, counted in the threats table, and the conclusive verdict
+  wins;
+* a disagreement where **neither** side is a timeout halts unconditionally;
+* the no-double-execution identity is stated with the repeats named, because
+  they are real CPU but not extra verdicts:
+
+      (sandbox_runs − timeout_reruns) + verdict_hits == Σ test_calls
+
+  asserted per scan in `ScanResult.__post_init__` and over the whole run in
+  `run/shard.audit_invariant9`.
+
+**The open measurement stands**: the share of (patch, probe) pairs whose verdict
+is `timeout` on this corpus, and the flip rate at the grid's target concurrency.
+Both fall out of one `caster audit` pass run twice. Until that number exists,
+this is the cheap decision, not the demonstrably right one.
+
+## 3. Both priors ship; `Beta(½,2)` is the default
+
+`--prior shipped` (the default) and `--prior jeffreys`.
+`caster/keys.py::PRIORS`.
+
+Jeffreys `Beta(½,½)` puts an unseen probe at `K = 0.5`, which outranks a proven
+refuter whose record has decayed below it — `k=2, n=10` gives `K = 0.227`. Under
+homogeneous per-probe costs that is a full-pool sweep. `Beta(½,2)` has prior
+mean 0.2: above this corpus's measured base rate (≈0.03), below ½.
+
+`K = ½` is **not** described anywhere as "the exploration". Exploration is what
+`explore_p` is for, and the two are not interchangeable.
+
+**What settles it, and it costs nothing:** replay both priors over the full-scan
+kill matrix (`report/analyse.compare_priors`) and report mean rank of the probe
+that actually fired, and mean probes run per refuted round. No model calls, no
+sandbox runs. Arms 5–11 are replayed under both.
+
+## 4. Verbalized sampling is in scope, so the record carries `candidate_index`
+
+`caster/report/records.py`, `caster/run/propose.py`, arm 18.
+
+A VS round emits *n* candidates from one draw, so the record emits *n* rows
+sharing one `cache_key`. Declaring VS out of scope would lose arm 18 and the
+exploration question, and would leave the within-episode reuse scope of the
+verdict store with nothing to do. It is a schema change, so it is made before
+the first row is written.
+
+One consequence: **the budget counts rounds (model calls), not candidates.**
+Charging each candidate would let a `k=5` arm spend B in B/5 draws, so "rounds
+to repair" would compare arms at different numbers of model calls — exactly the
+quantity the exploration question is about. The extra CPU of scanning five
+candidates lands in `cpu_s`, which is the cost unit anyway. Exactly one row per
+round carries `charged=True` and the USD.
+
+Rounds 1–2 carry no VS, which keeps the round-1 identity intact against the
+non-VS arms — and the **output budget** is sized from the number of programs the
+round actually requests, because `max_tokens` is in the cache key.
+
+## 5. The pool is ordered by a seeded interleave
+
+`caster/bench/gate.py::_interleave`, `GateConfig.pool_order`.
+
+ConDefects' own order is contest order, correlated with date (the contamination
+cut), with rating, and therefore with pool size. Cutting contiguous shard ranges
+from it would leave a killed fleet with a *systematically* biased subset rather
+than a smaller grid. The seed and the choice both enter `pool_sha256`, so the
+ordering cannot change silently. `--pool-order contest` reproduces the unordered
+case deliberately.
+
+## 6. Ten verbs, and no `evaluate --full-scan`
+
+`freeze propose evaluate audit merge analyse report serve preflight smoke`.
+`caster/cli.py`, asserted by `tests/test_cli.py::test_the_count_is_ten`.
+
+* `preflight` and `smoke` are **verbs**, not modes. They are the two things a
+  session runs first, and burying them under another verb is how they stop being
+  run.
+* `gateway` is a **mode of `serve`**, because the gateway owns backend
+  lifecycle: the thing that starts replicas and the thing that routes to them
+  must not be two commands that can disagree about which replicas exist.
+* `caster audit` is the dedicated full-scan pass: every probe against every
+  patch, no early stop, **no ledger** (an audit is not an episode; a ledger it
+  updated would be a cross-episode prior), at a **declared** concurrency,
+  **before any arm runs**. It writes the kill matrix and the cost table, each
+  with its own digest.
+* the no-early-stop *policy* is `--policies full-suite` (arm 0), which replays
+  that matrix for free.
+
+An arm populating the cost table would make the table a function of which arm
+ran first and of the concurrency it ran under, which is why the flag does not
+exist.
+
+## 7. Two separate "do not go live" flags
+
+`--from-cache-only` and `--replay-only` are different misses that fail for
+different reasons at different times:
+
+* `--from-cache-only` — the **model** side. A miss means phase 1 never drew this
+  round. It raises `CacheMiss`, **not** `BackendUnreachable`: that class is
+  caught by the loop, charged as a spent round and fed to the circuit breaker,
+  so five misses would end the cell as a "backend outage" — exactly the silent
+  degradation the flag exists to prevent.
+* `--replay-only` — the **sandbox** side. Every probe must be servable from the
+  verdict store. This is what makes "after an audit pass, every policy sees
+  `sandbox_runs == 0`" checkable rather than hoped for, and it is where the
+  timeout quarantine gets teeth: a `timeout` verdict is not servable, so a
+  replay that needs one fails instead of silently re-executing under a different
+  load than the audit measured.
+
+## 8. The cost table is frozen by the audit pass, and a changed verdict does not inherit from it
+
+`caster/exec/store.py`.
+
+The audit pass writes the cost table once, at one declared concurrency, so no
+arm's own run conditions enter it. But an audited `timeout` whose re-execution
+comes back `pass` is a probe the audit **mismeasured**: its wall-clock kill is
+not the cost of the millisecond run that actually happened. Inheriting it would
+poison the frozen table on exactly the probes most likely to flip. So the
+inheritance applies only when the verdict is unchanged, and a `timeout` never
+enters `cost_digest()` at all — otherwise the stamped artifact would move the
+moment a probe was re-run and came back conclusive, which is when it should
+least move.
+
+## 9. `--remeasure-cost` executes; it does not replay
+
+`caster/cli.py::_remeasure`.
+
+Running the repeats through `scan()` is served from the verdict store on every
+one — after the audit pass every probe is a hit — so all `R` draws are
+byte-identical and the reported variance is a **structural zero**. That number
+is the input to every CPU confidence interval, so a zero there is worse than no
+number at all. It calls the adapter directly, samples `(patch, probe)` keys (the
+unit the store is keyed on, not whole tasks), and reports the timeout flip rate
+as a by-product.
+
+The flag's three ambiguities are also decided:
+`--remeasure-cost PCT --remeasure-repeats R --remeasure-seed S`. PCT is a
+**percentage** — the name says so and the name wins. The sample is **seeded**,
+because an unseeded one makes the variance estimate itself irreproducible. And
+**R ≥ 3**, enforced: one re-execution gives a difference, not a variance.
+
+The number it produces is labelled as what it is — *an input to the CI, not the
+CI*. The right calculation is `bootstrap_cpu(..., replay=...)`, which resamples
+the cost table from these draws **and** the task clusters, and re-runs the
+offline replay per iteration. Called without a `replay`, the result says
+`cost_table_resampled: false` rather than quietly reporting the narrow interval.
+
+## 10. A store-served verdict carries the observation, not just the status
+
+`caster/exec/store.py::OUTPUT_HEAD_CHARS`, `ProbeVerdict.output_len`.
+
+The contract block renders "your last attempt printed `…`" from the last
+observation. A replay against a warm store that returned only a status would
+build a **different prompt** from the run that filled the store — a different
+draw, decided by cache warmth, with nothing in any key to say so. So the store
+keeps the head of the candidate's stdout (240 chars, the hard quoting cap, so
+more could never be rendered anyway), the error class, **and the true length**.
+
+The length matters on its own: truncating on the warm path only would print
+"[truncated, 240 chars total]" where the cold run printed "[truncated, 8,890
+chars total]", and for a long single line it would drop the marker entirely.
+Both paths truncate, and the true size travels with the head.
+
+## 11. A legible input is shown whole, never through `snippet()`
+
+`caster/steer/render.py`.
+
+`snippet()` joins lines with `" / "` and cuts at 240 characters. Running a
+legible multi-line input through it and then asserting a required output for the
+result is a **false fact** — and it would hit every multi-line stdin at any
+size, not just the stress cases. Legible inputs and required outputs are
+rendered verbatim between `<<<` / `>>>` markers rather than a ``` fence, because
+the output-format slot asks for the answer in a ```python block and a second
+fence in the prompt is the one thing that can make a model close the wrong one.
+
+An input too large to show becomes a **shape** — how many lines, how many
+characters, the first line verbatim, because on AtCoder that line carries N. An
+expected output too large to show is **withheld**, not truncated: a required
+value the model cannot read is not a requirement.
+
+## 12. Probe names never reach a prompt
+
+`caster/steer/render.py`.
+
+A filename is a label the model cannot act on, and worse, the naming is *itself*
+information: the `sample`/`example`-named probes are the public, small, highly
+discriminating ones. Putting the name in the prompt leaks the name class — the
+same artefact the hashed schedule tie-break exists to keep out of the ordering.
+With no name rendered, "never name a probe whose content is not in the prompt"
+holds by construction.
+
+## 13. `facts_shown` is what the prompt showed
+
+`caster/run/episode.py`.
+
+Captured **before** the scan, from the facts the prompt was built from, and
+empty when `steer_on` is false. The exploitability bound is computed from
+exactly this field: read off the post-update ledger it is one round late, and
+emitted for an unsteered arm it attributes a disclosure that never happened.
+Either way the leakage figure is wrong and nothing looks broken.
+
+## 14. The evidence budget, the disclosure policy and the VS width are arms, not flags
+
+`caster/run/policies.py`.
+
+Every steered arm sets all three in its own overrides, so a grid-wide flag would
+lose to the arm on exactly the arms where it matters — a flag that is parsed,
+keyed and then discarded, which puts the *default* in the cell key while the
+command line says otherwise. `km+steer-k1`, `km+steer-k3`, `km+steer-sample`,
+`km+steer-noreq` and `km+steer+vs` are the mechanism. Add a row to the roster,
+not a flag.
+
+The four knobs that stay grid-wide (`--prior`, `--cold-start`, `--explore-p`,
+`--tie-break`) do so because they are swept *across* arms, and the plan prints
+which arms override them.
+
+## 15. The regression signal is an arm, not a default
+
+`km+steer-pass`, beside `km+steer`.
+
+Showing the probes the last candidate already satisfied is a positive,
+zero-leak, zero-extra-cost fact — the scan already knows them. It is also
+speculative: nothing prices it yet. So it is an arm, with a plain contract arm
+beside it to compare, rather than a default that quietly changes every steered
+prompt.
+
+(The obvious implementation is dead code: fill the list on `accept`, and the
+episode ends before it can render. And an oracle that stops at the first
+divergence throws the information away unless it is kept deliberately.)
+
+## 16. An incomplete floor arm may not freeze the denominator
+
+`caster/report/analyse.py::floor_arm_is_complete`.
+
+`GAPS` is a non-fatal merge audit, so a merge succeeds on a partial grid — and
+the next `analyse` would otherwise freeze a repair rate computed from one shard.
+That rate is the denominator of every repair-rate band, and the freeze only ever
+*adds* keys, so an under-seeded rate never corrects itself.
+
+The freeze is gated on the floor arm covering every task of the universe at
+every seed it ran, and `caster analyse --freeze-rates` forces it when an
+operator means to. `repair_rates_source` on the summary says which happened.
+
+## 17. The gateway owns one ledger, and the client does not double-log
+
+`caster/llm/gateway.py::SpendLedger`, `_settle`; `caster/llm/client.py`.
+
+Coalescing makes N shards that miss one cache key produce one upstream **call**.
+Without the ledger write moving to the gateway, each of the N clients still
+appends its own `usd` row — one call, N charges. The gateway prices the reply,
+writes the single row, and stamps the body with `_caster_gateway`, which the SDK
+surfaces through `model_extra`; the client sees the stamp and skips its own
+write. (Response *headers* are not exposed on the SDK's parsed model, which is
+why the stamp travels in the body.)
+
+A per-process cap is also not a cap: `BUDGET_USD_CAP=25` across N shards is a
+real ceiling of 25N, with the arithmetic falling on the operator.
+
+## 18. The sandbox timeout reaches `protocol_sha` and `.meta.json`
+
+It is correctly a **non-key** flag — it is one of the values that reach no cache
+key — but it changes what a verdict **is**, so it must reach the protocol digest
+and the shard's runtime record. Otherwise a run at `--timeout 5` writes verdicts
+into the `--timeout 10` namespace and the runtime-disagreement audit, the one
+check designed to catch exactly this, reads a constant.
+
+## 19. The control arm is runnable, and excludes the dedup rejects
+
+`caster/bench/gate.py::control_tasks`, `caster evaluate --control`.
+
+The pool-size threshold costs 23.2% of the corpus. That is affordable, but it is
+selection on a variable correlated with the outcome, so it is declared as a
+scope condition and made **checkable**: a seeded uniform sample over the
+G1-only survivors a threshold cut, pre-registered as "reported whatever it
+shows". Their faults are never in `pool_order`, so no main-grid analysis can
+pool them by accident.
+
+G4's rejects are excluded from it. They share a test pool with an admitted
+fault, which is the exact correlation G4 exists to remove, and it would
+otherwise sit inside the arm meant to measure what the threshold cut.
+
+## 20. Smaller calls, recorded so they are decisions rather than accidents
+
+* **`CacheMiss` lives in `caster/errors.py`.** It is raised on both sides of the
+  phase split, and defining it inside the verdict store would make `llm/` import
+  `exec/` for one class.
+* **A shard registers with the gateway for the whole walk.** Teardown is driven
+  by a refcount, not by shard exit: a shard between calls still owns the pool.
+* **`caster smoke --live` counts the client's own calls**, not lines in the call
+  ledger — the gateway owns that ledger and may run under a different `RUN_DIR`,
+  which would report a real call as a cache hit on the one check that proves the
+  live path works.
+* **`replay_policy` honours `arm.full_scan`.** Arm 0 early-stopping in a replay
+  reports roughly 1/N of its true cost, and being the measured upper bound is
+  arm 0's entire job.
+* **The `coverage` arm has no optional dependency.** Reference coverage is
+  traced with `sys.settrace` in a subprocess, memoised per `(task, probe)` and
+  counted into `reference_runs`. A dependency that silently degrades to a no-op
+  means an arm can report under a label it was not running.
+* **`est_scans` counts VS candidates**, header lookup is case-insensitive (a
+  normalising proxy would silently disable coalescing and restore the N× bill),
+  connect timeouts are labelled `service_timeout` like read timeouts, and
+  discovery lists probe names from the directory rather than reading every
+  probe's text.
+* **The prompt parser is forgiving, the record is not.** A reply with no closed
+  fence raises rather than returning the raw text as a patch: such a candidate
+  always fails, so a harness defect would enter memory as evidence inside the
+  very mechanism under study.

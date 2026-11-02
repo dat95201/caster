@@ -1,0 +1,43 @@
+# Secrets and local config
+.env
+
+# Run output. `RUN_DIR` nests under these; the directories themselves stay.
+data/
+logs/
+
+# Cross-run stores. Big, machine-local, and regenerable — the response cache is
+# what makes a re-run free, so it is kept, but it is not source.
+cache/
+verdicts/
+patches/
+
+# The benchmark checkout. `Code/` is a 125 MB clone and `Test/` a 6.4 GB
+# out-of-band download; `scripts/fetch_condefects.py` gets both.
+external/
+
+# Backend ownership record — which listeners THIS machine started.
+.caster/
+
+# Smoke baselines ARE source and must be committed: a smoke test whose
+# expectations are regenerated every run is a liveness check, not a regression
+# test. Nothing here excludes smoke/.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
