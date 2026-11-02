@@ -41,7 +41,7 @@ persistence and a shard fleet.
 
 | verb | what it does |
 |---|---|
-| `freeze` | applies the corpus gate, splits `P_loop`/`P_eval`, writes `pool/tasks.json` + `pool_sha256` |
+| `freeze` | applies the corpus gate, splits `P_loop`/`P_eval`, writes `pool/tasks.json` + `pool_sha256`. No pool-size screen: `analyse` bands by `\|P_loop\|` after the run |
 | `propose` | **phase 1** — fills the response cache and the patch store. Block A only |
 | `evaluate` | **phase 2** — walks `(task × seed × policy)`, resumably, writing atomic cells. `--from-cache-only` refuses to call the model; `--replay-only` refuses to run the sandbox too; `--control` walks the unfiltered control arm |
 | `audit` | the dedicated full-scan pass: the kill matrix and the frozen cost table |
@@ -187,10 +187,14 @@ likely to go first:
 pytest -q
 ```
 
-225 tests, no network, no model. The benchmark fixture is a real miniature
-ConDefects tree that is really executed — the point of the sandbox is process
-isolation, CPU accounting and an error taxonomy, and a mock would test none of
-it.
+`pytest` runs **CASTER's own unit tests** — not the experiment. 232 of them,
+seconds, no network and no model. They are unrelated to the ~1,244-fault corpus
+that `caster freeze` produces and `caster evaluate` walks.
+
+The benchmark fixture they run against is a real miniature ConDefects tree
+(two faults, ~24 probes each, in a temp dir) that is really executed — the point
+of the sandbox is process isolation, CPU accounting and an error taxonomy, and
+a mock would test none of it.
 
 `tests/test_review_regressions.py` is one test per defect a review pass found,
 each named after what it would have cost. They are not extra coverage: every one

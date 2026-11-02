@@ -187,3 +187,116 @@ def test_g4_keeps_one_fault_per_coding_task_by_a_seeded_uniform_draw(adapter, co
     for f in sibling_dir.iterdir():
         f.unlink()
     sibling_dir.rmdir()
+
+
+def test_a_case_the_sandbox_cannot_run_is_named_as_such(tmp_path):
+    """The reason is a CAPABILITY fact, and its name has to say so.
+
+    `exceeds_sandbox_timeout` means the sandbox, at its configured
+    `SANDBOX_TIMEOUT_SEC`, cannot run this case — the same limit every arm runs
+    under, and part of `protocol_sha`. It is not a verdict that the case is too
+    expensive to be worth measuring: there is only ever one clock, and a second
+    stricter one would cut exactly the expensive-oracle faults the mechanism is
+    for. A reason named after cost would invite that filter back.
+    """
+    from conftest import _write, build_corpus
+    from caster.bench.adapter import ConDefectsAdapter
+
+    root = build_corpus(tmp_path / "beyond")
+    code = root / "Code" / "abc003_c" / "Python" / "3003"
+    stall = ("import time\n"
+             "n = int(input())\n"
+             "if n == 99:\n"
+             "    time.sleep(5)\n"
+             "print(n * 2)\n")
+    _write(code / "correctVersion.py", stall)
+    _write(code / "faultyVersion.py", stall.replace("n * 2", "n * 3"))
+    _write(code / "faultLocation.txt", "5\n")
+    test = root / "Test" / "abc003" / "C"
+    for i in range(8):
+        _write(test / "in" / f"01_random_{i:02d}.txt", f"{i + 1}\n")
+        _write(test / "out" / f"01_random_{i:02d}.txt", f"{(i + 1) * 2}\n")
+    _write(test / "in" / "02_big_00.txt", "99\n")
+    _write(test / "out" / "02_big_00.txt", "198\n")
+    _write(root / "date.txt", "abc001_a 2023-05-01\nabc002_b 2023-06-01\n"
+                              "abc003_c 2023-07-01\n")
+
+    ad = ConDefectsAdapter(root=root, timeout=0.5)
+    t = gate_one(ad, "abc003_c/3003",
+                 GateConfig(min_loop_pool=4, date_min="2000-01-01"))
+    assert t.admitted, t.reason
+    assert t.unusable.get("02_big_00.txt") == "exceeds_sandbox_timeout"
+    assert "02_big_00.txt" not in t.pool
+    assert "slow" not in set(t.unusable.values()), "a cost-shaped name is the bug"
+
+
+# ── the pool-size screen moved out of the gate ───────────────────────────────
+
+
+def test_the_gate_no_longer_screens_on_pool_size(adapter):
+    """A pre-treatment screen is the one decision that cannot be undone after
+    the run. `|P_loop| >= 20` used to delete 23.2% of the corpus before any cell
+    existed; now the grid runs every sound fault and `analyse` bands by pool
+    size afterwards, where the cut can be redrawn without re-running anything.
+    """
+    t = gate_one(adapter, "abc001_a/1001", GateConfig(date_min="2000-01-01"))
+    assert t.admitted, t.reason
+    assert len(t.p_loop) < 20, "the fixture pool must be small enough to matter"
+    assert t.gates["G3"]
+
+
+def test_the_default_floor_is_one_probe_not_a_disabled_check():
+    """1, not 0. Zero would switch the comparison off through a falsy sentinel;
+    what changed is the THRESHOLD, not whether it is evaluated. At 1 the check
+    states the real floor — an empty `P_loop` is a task no policy can schedule
+    — and it stays a live assertion if the two F2P checks are ever weakened."""
+    import inspect
+
+    from caster.bench import gate as gate_mod
+
+    assert gate_mod.MIN_LOOP_POOL == 1
+    assert GateConfig().min_loop_pool == 1
+    src = inspect.getsource(gate_mod.gate_one)
+    assert "cfg.min_loop_pool and len(p_loop)" not in src, (
+        "the check must not be guarded by truthiness")
+    assert "if len(p_loop) < cfg.min_loop_pool:" in src
+
+
+def test_min_pool_still_re_imposes_the_old_screen(adapter):
+    """Reproducibility of the old corpus is the point of keeping the flag."""
+    t = gate_one(adapter, "abc001_a/1001",
+                 GateConfig(min_loop_pool=20, date_min="2000-01-01"))
+    assert not t.admitted and t.failed_gate == "G3"
+    assert "|P_loop|" in t.reason
+
+
+def test_g3_still_puts_a_floor_under_the_pool(adapter, tmp_path):
+    """Size is gone; the two SPLIT checks are not, and must not be.
+
+    A `P_loop` with no F2P case makes the fault invisible to the loop, so round
+    1 would accept the unmodified faulty program. A `P_eval` with no F2P case
+    makes a non-repair undetectable at scoring time. Together they still demand
+    two F2P cases, one per half — a floor that is not a difficulty proxy.
+    """
+    from conftest import _write, build_corpus
+    from caster.bench.adapter import ConDefectsAdapter
+
+    root = build_corpus(tmp_path / "onef2p")
+    code = root / "Code" / "abc004_d" / "Python" / "4004"
+    _write(code / "correctVersion.py", "n = int(input())\nprint(n * 2)\n")
+    # Wrong on exactly ONE case (n == 7), so F2P has a single member and the
+    # 70/30 split cannot put one in each half.
+    _write(code / "faultyVersion.py",
+           "n = int(input())\nprint(99 if n == 7 else n * 2)\n")
+    _write(code / "faultLocation.txt", "2\n")
+    test = root / "Test" / "abc004" / "D"
+    for i in range(8):
+        _write(test / "in" / f"01_random_{i:02d}.txt", f"{i + 1}\n")
+        _write(test / "out" / f"01_random_{i:02d}.txt", f"{(i + 1) * 2}\n")
+    _write(root / "date.txt", "abc001_a 2023-05-01\nabc002_b 2023-06-01\n"
+                              "abc004_d 2023-07-01\n")
+
+    t = gate_one(ConDefectsAdapter(root=root, timeout=10.0), "abc004_d/4004",
+                 GateConfig(date_min="2000-01-01"))
+    assert not t.admitted and t.failed_gate == "G3"
+    assert "F2P" in t.reason

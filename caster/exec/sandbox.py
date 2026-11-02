@@ -62,10 +62,13 @@ except ImportError:  # pragma: no cover - Windows
     resource = None  # type: ignore[assignment]
     _HAVE_RUSAGE = False
 
-# Higher than the QuixBugs-era default: AtCoder inputs run to ~2·10^5 items and
-# a *correct* CPython solution can legitimately need seconds on the largest
-# case.
-DEFAULT_TIMEOUT = float(os.environ.get("SANDBOX_TIMEOUT_SEC", 10.0))
+# The instrument's declared capability, not a cost threshold. AtCoder inputs run
+# to ~2·10^5 items and a *correct* CPython solution can legitimately need tens of
+# seconds on the largest case, so a tighter clock would not be measuring the
+# program — it would be excluding the expensive end of the corpus. There is
+# deliberately no second, stricter clock anywhere; this one reaches
+# `protocol_sha`, so changing it invalidates the verdict store by construction.
+DEFAULT_TIMEOUT = float(os.environ.get("SANDBOX_TIMEOUT_SEC", 60.0))
 # Contest solutions recurse over the whole input (DFS on 10^5 nodes); CPython's
 # default 1000 would turn correct programs into RecursionErrors. Kept well under
 # the C stack's real ceiling — a submission that sets its own limit to 10^6, as

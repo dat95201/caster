@@ -117,7 +117,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("freeze", help="apply G1–G6, split P_loop/P_eval, write pool/tasks.json")
     p.add_argument("--condefects-root", dest="condefects_root", default=None)
     p.add_argument("--test-dir", dest="test_dir", default=None)
-    p.add_argument("--min-pool", dest="min_pool", type=int, default=20)
+    p.add_argument("--min-pool", dest="min_pool", type=int, default=1,
+                   help="floor on |P_loop| (default 1: a pool with no probe is "
+                        "unschedulable). Raise it to re-impose the old "
+                        "pre-treatment screen — `--min-pool 20` reproduces the "
+                        "former corpus; otherwise `analyse` bands by pool size "
+                        "after the run")
     p.add_argument("--date-min", dest="date_min", default="2022-04-01")
     p.add_argument("--lines-max", dest="lines_max", type=int, default=120)
     p.add_argument("--eval-ratio", dest="eval_ratio", type=float, default=0.30)

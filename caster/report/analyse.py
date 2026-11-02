@@ -250,6 +250,77 @@ def band_of(rate: float) -> str:
     return "trivial"
 
 
+#: Post-hoc bands over `|P_loop|` — the screen G3 used to apply BEFORE the run.
+#: `standard` is exactly the old `--min-pool 20` corpus, so every number that
+#: gate would have produced is still computable, and the 23.2% it used to
+#: delete is reported beside it instead. Pool size is a property of the frozen
+#: pool rather than an outcome, so banding on it is a stratification, not a
+#: screen — and unlike a screen it can be re-cut without re-running anything.
+POOL_BANDS: tuple[tuple[str, int, int], ...] = (
+    ("degenerate", 0, 2),         # |P_loop| = 1: every policy is one schedule
+    ("tiny", 2, 10),
+    ("small", 10, 20),
+    ("standard", 20, 1 << 30),    # what `--min-pool 20` admitted
+)
+
+
+def pool_band_of(n: int) -> str:
+    for name, lo, hi in POOL_BANDS:
+        if lo <= n < hi:
+            return name
+    return "standard"
+
+
+def load_pool_sizes(pool_dir: pathlib.Path) -> dict[str, int]:
+    """`|P_loop|` per admitted task, read from the frozen corpus.
+
+    From `tasks.json`, not from the rows: the pool size is a property of the
+    frozen pool, and deriving it from whatever cells happened to land in this
+    merge would make a band a function of shard completeness.
+    """
+    path = pool_dir / "tasks.json"
+    if not path.is_file():
+        return {}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        return {n: len(t.get("p_loop") or ())
+                for n, t in doc.get("tasks", {}).items() if t.get("admitted")}
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return {}
+
+
+def arms_by_pool_band(cs: Sequence[Cell],
+                      sizes: dict[str, int]) -> dict[str, Any]:
+    """RQ1's arm table, stratified by `|P_loop|`. The screen, moved after the run.
+
+    A pre-treatment screen has to be decided before any cell exists and cannot
+    be undone; this is decided afterwards, cannot change the corpus, and can be
+    re-cut any number of ways. Cells whose task is not in the frozen pool —
+    control-arm faults — are left out, because they are reported separately
+    "whatever it shows" and pooling them here would put back the correlation
+    the control arm exists to measure.
+    """
+    if not sizes:
+        return {}
+    groups: dict[str, list[Cell]] = {}
+    for c in cs:
+        if c.task in sizes:
+            groups.setdefault(pool_band_of(sizes[c.task]), []).append(c)
+    out: dict[str, Any] = {}
+    for name, _lo, _hi in POOL_BANDS:
+        group = groups.get(name) or []
+        if not group:
+            continue
+        tasks = {c.task for c in group}
+        out[name] = {
+            "tasks": len(tasks),
+            "cells": len(group),
+            "pool_median": statistics.median(sorted(sizes[t] for t in tasks)),
+            "arms": arm_table(group),
+        }
+    return out
+
+
 # ── the main tables ──────────────────────────────────────────────────────────
 
 
@@ -557,6 +628,7 @@ def summarise(rows: Sequence[RoundRecord], *, budget: int,
     reason to pick one. `--freeze-rates` forces it when an operator means to.
     """
     cs = cells(rows, budget=budget)
+    pool_sizes = load_pool_sizes(pool_dir) if pool_dir else {}
     frozen_rates = load_repair_rates(pool_dir) if pool_dir else {}
     computed = repair_rates(cs)
     rates = {**computed, **frozen_rates}       # the frozen value wins
@@ -577,6 +649,9 @@ def summarise(rows: Sequence[RoundRecord], *, budget: int,
         "bands": {k: band_of(v) for k, v in rates.items()},
         "repair_rates_source": source,
         "floor_arm_complete": complete,
+        # The pool-size screen G3 used to apply, moved after the run.
+        "pool_bands": {t: pool_band_of(n) for t, n in sorted(pool_sizes.items())},
+        "arms_by_pool_band": arms_by_pool_band(cs, pool_sizes),
         "arms": arm_table(cs),
         "decomposition": decomposition(cs),
         "survival": {

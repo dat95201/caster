@@ -81,7 +81,7 @@ def test_defaults_match_the_spec():
     assert args.seeds == "0,1,2"            # 3 seeds, not 5
     assert args.explore_p == 0.15           # assert args.prior == "shipped"          # assert args.cold_start == "max"         # assert args.tie_break == "hash"         # assert args.budget == 20
     f = cli.build_parser().parse_args(["freeze"])
-    assert f.min_pool == 20 and f.lines_max == 120 and f.eval_ratio == 0.30
+    assert f.min_pool == 1 and f.lines_max == 120 and f.eval_ratio == 0.30
     assert f.date_min == "2022-04-01" and f.pool_order == "interleave"
 
 

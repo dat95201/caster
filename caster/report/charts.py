@@ -146,6 +146,34 @@ def render(summary: dict[str, Any], *, title: str = "CASTER run report",
              for b, n in sorted(counts.items(), key=lambda kv: -kv[1])],
             numeric=(1, 2)))
 
+    by_pool = summary.get("arms_by_pool_band", {})
+    if by_pool:
+        parts.append("<h2>Pool-size bands (post hoc)</h2>")
+        parts.append('<p class="note">G3 used to screen on <code>|P_loop| &ge; 20</code> '
+                     '<em>before</em> the run, which deleted 23.2% of the corpus and '
+                     'left a population nobody could weight back to the benchmark. '
+                     'The grid now runs every sound fault and the screen is a band: '
+                     '<code>standard</code> is exactly the old corpus, and the rest is '
+                     'reported beside it. At <code>|P_loop|</code> = 1 every policy is '
+                     'the same schedule by construction, so <code>degenerate</code> '
+                     'dilutes a corpus-wide average and is shown apart.</p>')
+        parts.append(_table(
+            ["band", "tasks", "cells", "median |P_loop|", "best arm by cpu/episode"],
+            [[b, d["tasks"], d["cells"], d["pool_median"],
+              html.escape(min(d["arms"], key=lambda r: r["cpu_s_mean"])["policy"])
+              if d["arms"] else "—"]
+             for b, d in by_pool.items()], numeric=(1, 2, 3)))
+        for b, d in by_pool.items():
+            parts.append(f"<h3>Arms — {html.escape(b)} "
+                         f'(|P_loop| median {d["pool_median"]}, {d["tasks"]} tasks)</h3>')
+            parts.append(_table(
+                ["arm", "block", "cells", "cpu/episode", "probes/episode",
+                 "success@B"],
+                [[html.escape(r["policy"]), f'<span class="pill">{r["block"]}</span>',
+                  r["cells"], f'{r["cpu_s_mean"]:.3f}', f'{r["test_calls_mean"]:.2f}',
+                  f'{r["success_at_b"]:.1%}']
+                 for r in d["arms"]], numeric=(2, 3, 4, 5)))
+
     # ── the main tables ─────────────────────────────────────────────────────
     arms = summary.get("arms", [])
     survival = summary.get("survival", {})

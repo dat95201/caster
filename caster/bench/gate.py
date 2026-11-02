@@ -15,34 +15,56 @@ benchmark, so bands are computed post hoc.
 | G5 | contamination cut: drop contests older than `--date-min` |
 | G6 | the source fits a prompt (`LINES_MAX`) |
 
-**Not a gate, deliberately: cost.** A fault is unusable only when its reference
-cannot be established at the same sandbox clock every arm runs under — never
-because it is slower than some second threshold. A separate 10 s filter drops
-roughly 9% of candidates — **exactly the expensive-oracle faults the mechanism
-helps most** — and biases every cost figure downward. CASTER's entire claim is
-about tasks where the oracle is expensive, so the per-case reason keeps the
-distinction: `slow` (the reference timed out at the clock) is not `wrong` (the
-reference disagrees with `out/`).
+**Not a gate, deliberately: cost.** No fault is dropped for being expensive,
+and there is no second threshold in this file. The sandbox clock is not one
+either: it is the instrument's **declared capability** — the same
+`SANDBOX_TIMEOUT_SEC` every arm runs under, carried in `protocol_sha` — so a
+case whose reference does not complete inside it is a case this instrument
+cannot measure, not a case judged too slow to be worth measuring.
 
-**G3 is counted on `P_loop`.** The threshold exists so there is something to
-schedule, and the loop only ever schedules `P_loop`. Applying it to the pool and
-*then* splitting 30% off into `P_eval` admits tasks the mechanism provably
-cannot act on, which is the exact thing the threshold was chosen to exclude.
+The per-case reason keeps the two apart. `exceeds_sandbox_timeout` is a
+**capability** fact: the sandbox, at its configured limit, cannot run this
+case. `reference_disagrees_with_out` is a **soundness** fact: it ran, and it is
+not a reference. Conflating them is how a cost filter sneaks into a gate that
+must not have one — and a second, stricter clock added to prune expensive
+faults would delete exactly the expensive-oracle population the mechanism helps
+most, and bias every cost figure downward.
 
-Why 20, and what it costs — measured over all 1,422 ConDefects problems (median
-31 cases, mean 36.4, range 3–148): ≥10 admits 97.5%, ≥15 admits 86.1%, **≥20
-admits 76.8%**, ≥25 admits 64.8%, ≥30 admits 54.6%. 20 costs 23.2% of the
-corpus. That is affordable, but it is **selection on a variable correlated with
-the outcome** and is declared as a scope condition, not buried: at pool size 1
-the three policies are identical by construction, so admitting tiny pools would
-dilute every corpus-wide average with cells where the mechanism cannot act. The
-reported effect is *the effect on tasks with a pool worth scheduling*, and the
-paper must say so in exactly those words.
+**G3 does not screen on pool size.** It used to: `|P_loop| ≥ 20`. That
+threshold is gone from the gate and lives in the analysis instead. `freeze`
+admits every fault whose oracle is sound, the grid runs all of them, and
+`analyse` bands the result by `|P_loop|` afterwards (`report/analyse.py`,
+`POOL_BANDS`).
 
-So `freeze` also draws an **unfiltered control arm** — a uniform sample over
-the G1-only survivors, pre-registered as "reported whatever it shows". It is the
-only thing that makes the scope condition checkable rather than asserted, and it
-is what produces the effect size in the excluded 15–19 band.
+Nothing is lost by moving it. Measured over all 1,422 ConDefects problems
+(median 31 cases, mean 36.4, range 3–148): ≥10 admits 97.5%, ≥15 admits 86.1%,
+**≥20 admits 76.8%**, ≥25 admits 64.8%, ≥30 admits 54.6%. The old pool was the
+76.8%, and it was a population nobody could weight back to the benchmark. The
+post-hoc `standard` band **is** that pool, reproduced exactly, and the other
+23.2% is now reported beside it instead of being deleted. `--min-pool N`
+re-imposes the screen for anyone who wants the old behaviour.
+
+It is safe to move because the threshold was never load-bearing for
+correctness, only for interpretation: at pool size 1 every policy is the same
+schedule by construction, so tiny pools **dilute** a corpus-wide average rather
+than corrupt it — and a band separates them, which is exactly what this file's
+own rule says to do with a covariate. A screen is the one thing that cannot be
+undone after the run; a band can be drawn any number of ways.
+
+**What G3 still rejects, and must.** Two checks, both about the SPLIT rather
+than about size:
+
+* `P_loop` with no F2P case — the fault would be invisible to the loop, and
+  round 1 would accept the unmodified faulty program.
+* `P_eval` with no F2P case — a non-repair would be undetectable at scoring.
+
+Together they put a real floor under the pool (two F2P cases, one per half)
+without screening on a difficulty proxy.
+
+`freeze` still draws an **unfiltered control arm** — a uniform sample over the
+G1-only survivors a threshold cut, pre-registered as "reported whatever it
+shows". With the pool-size screen gone it covers what remains: G5's date cut,
+G6's length cut, and an explicitly passed `--min-pool`.
 
 **The funnel is counted in faults, not problems**, and every fault examined is
 published with the first gate it failed, so "N examined → M admitted" reproduces
@@ -68,8 +90,14 @@ from caster.exec.sandbox import Outcome, run_program
 #: comparing curves over one denominator instead of two.
 EVAL_RATIO = 0.30
 
-#: G3. See "Why 20" above.
-MIN_LOOP_POOL = 20
+#: G3. The floor, not a screen: a `P_loop` with no probe at all cannot be
+#: scheduled by anything. Deliberately **1 rather than 0** — 0 would be a
+#: falsy sentinel that switches the check off, and the check should always be
+#: on; what changed is the threshold, not whether it is evaluated. Raise it
+#: (`--min-pool 20`) to re-impose the old pre-treatment screen; the gate
+#: otherwise admits every sound fault and `analyse` bands by `|P_loop|` after
+#: the run.
+MIN_LOOP_POOL = 1
 
 #: G5. The latest cut that still yields the required number of candidates — a
 #: threshold set by pool size rather than by theory, and declared as such.
@@ -160,7 +188,14 @@ def _stable_reference(adapter: ConDefectsAdapter, task_name: str,
     per-round cost the store exists to avoid: the reference answer is memoised in the
     adapter and the loop never recomputes it.
 
-    A case that fails either check is marked `unusable` and excluded **from the
+    Both checks work by *running* the reference, so both need the sandbox to be
+    able to run it. A case it cannot — the reference exceeds
+    `SANDBOX_TIMEOUT_SEC` — falls outside the instrument's declared capability
+    and is marked `exceeds_sandbox_timeout`. That is not a judgement that the
+    case is too expensive: there is only ever one clock, it is the same one
+    every arm runs under, and it is recorded in `protocol_sha`.
+
+    A case that fails any of these is marked `unusable` and excluded **from the
     pool, not from the task**.
     """
     program = adapter.program(task_name)
@@ -169,11 +204,13 @@ def _stable_reference(adapter: ConDefectsAdapter, task_name: str,
         got = run_program(program.reference_source, case.input_text,
                           timeout=adapter.timeout)
         if got.timed_out:
-            # `slow` is NOT `wrong`: a reference that
-            # times out at the clock is a cost fact; a reference that disagrees
-            # with `out/` is a soundness fact, and conflating them is how a cost
-            # filter sneaks back into a gate that must not have one.
-            return None, "slow"
+            # Outside the sandbox's declared capability — NOT "too expensive".
+            # The clock is `SANDBOX_TIMEOUT_SEC`, the same limit every arm runs
+            # under and part of `protocol_sha`, so a reference that does not
+            # finish inside it cannot be established by this instrument at all.
+            # Kept distinct from `reference_disagrees_with_out`, which is a
+            # soundness fact, so that no cost filter can hide behind either.
+            return None, "exceeds_sandbox_timeout"
         if not got.ok:
             return None, "reference_crashed"
         runs.append(got)
@@ -321,6 +358,12 @@ def gate_one(adapter: ConDefectsAdapter, task_name: str,
         return fail("G3", "the split left no F2P case in P_eval — a non-repair "
                           "would be undetectable at scoring time")
     if len(p_loop) < cfg.min_loop_pool:
+        # At the default of 1 this is the floor — an empty `P_loop` is a task no
+        # policy can schedule — and the two F2P checks above already imply it,
+        # so it fires only if one of them is ever weakened. Above 1 it is the
+        # old pre-treatment screen, opt-in: a screen cannot be undone after the
+        # run, while the band `analyse` draws from `|P_loop|` can be re-cut any
+        # number of ways.
         return fail("G3", f"|P_loop|={len(p_loop)} < {cfg.min_loop_pool} usable probes")
     gates["G3"] = True
 

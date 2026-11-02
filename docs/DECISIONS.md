@@ -321,12 +321,14 @@ check designed to catch exactly this, reads a constant.
 
 `caster/bench/gate.py::control_tasks`, `caster evaluate --control`.
 
-The pool-size threshold costs 23.2% of the corpus. That is affordable, but it is
-selection on a variable correlated with the outcome, so it is declared as a
-scope condition and made **checkable**: a seeded uniform sample over the
-G1-only survivors a threshold cut, pre-registered as "reported whatever it
-shows". Their faults are never in `pool_order`, so no main-grid analysis can
-pool them by accident.
+A threshold that cuts the corpus is selection on a variable correlated with the
+outcome, so whatever thresholds remain are declared as scope conditions and
+made **checkable**: a seeded uniform sample over the G1-only survivors a
+threshold cut, pre-registered as "reported whatever it shows". Their faults are
+never in `pool_order`, so no main-grid analysis can pool them by accident.
+
+Since decision 21 removed the pool-size screen, what this arm covers is G5's
+date cut, G6's length cut, and an explicitly passed `--min-pool`.
 
 G4's rejects are excluded from it. They share a test pool with an admitted
 fault, which is the exact correlation G4 exists to remove, and it would
@@ -359,3 +361,46 @@ otherwise sit inside the arm meant to measure what the threshold cut.
   fence raises rather than returning the raw text as a patch: such a candidate
   always fails, so a harness defect would enter memory as evidence inside the
   very mechanism under study.
+
+## 21. The pool-size screen moved out of the gate and into the analysis
+
+`caster/bench/gate.py::MIN_LOOP_POOL` (now 1), `report/analyse.py::POOL_BANDS`.
+
+G3 used to reject a fault with `|P_loop| < 20`. Measured over all 1,422
+ConDefects problems (median 31 cases, mean 36.4, range 3–148), that admitted
+76.8% and deleted 23.2% before a single cell existed — a population nobody can
+weight back to the benchmark.
+
+It is now a **band**, not a screen. `freeze` admits every fault whose oracle is
+sound, the grid runs all of them, and `analyse` stratifies by `|P_loop|`
+afterwards. The `standard` band is `≥ 20`, so it reproduces the old corpus
+exactly and every number the gate would have produced is still computable; the
+other 23.2% is reported beside it instead of being deleted.
+
+The asymmetry is the whole argument: **a pre-treatment screen has to be decided
+before any cell exists and cannot be undone afterwards, while a band can be
+re-cut any number of ways from the same rows.** When both give the same answer,
+take the one that is reversible.
+
+Moving it is safe because the threshold was never load-bearing for correctness,
+only for interpretation. At `|P_loop|` = 1 every policy is the same schedule by
+construction, so tiny pools **dilute** a corpus-wide average rather than
+corrupt it — and the `degenerate` band separates them, which is exactly what
+the gate's own rule prescribes for a covariate. `--min-pool 20` re-imposes the
+screen for anyone who wants the old behaviour.
+
+The default is **1, not 0**. Zero would switch the comparison off through a
+falsy sentinel; what changed is the threshold, not whether it is evaluated. At
+1 the check states the real floor — an empty `P_loop` is a task no policy can
+schedule — and it stays a live assertion if the two F2P checks above are ever
+weakened.
+
+What G3 still rejects, and must, are the two checks about the **split** rather
+than about size: a `P_loop` with no F2P case (the fault is invisible to the
+loop, so round 1 accepts the unmodified faulty program) and a `P_eval` with no
+F2P case (a non-repair is undetectable at scoring). Together they still demand
+two F2P cases, one per half — a floor that is not a difficulty proxy.
+
+Cells whose task is not in the frozen pool — the control arm's — are excluded
+from the bands. Pooling them would put back the exact correlation the control
+arm exists to measure.

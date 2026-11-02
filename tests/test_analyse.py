@@ -233,3 +233,40 @@ def test_a_duplicate_patch_is_measurable_today():
     (c,) = analyse.cells(rows, budget=5)
     assert c.patches == 3 and c.distinct_patches == 2
     assert c.duplicate_rate == pytest.approx(1 / 3)
+
+
+# ── the pool-size screen, moved after the run ────────────────────────────────
+
+
+def test_the_standard_band_is_exactly_the_old_min_pool_20_corpus():
+    """The boundary has to land on 20 or the band does not reproduce the gate."""
+    assert analyse.pool_band_of(1) == "degenerate"
+    assert analyse.pool_band_of(2) == "tiny"
+    assert analyse.pool_band_of(19) == "small"
+    assert analyse.pool_band_of(20) == "standard"
+    assert analyse.pool_band_of(148) == "standard"
+
+
+def test_arms_by_pool_band_reproduces_the_screen_without_rerunning(tmp_path):
+    """What the gate used to decide up front, computed afterwards from the same
+    cells — and the control-arm faults stay out of it, because pooling them here
+    would put back the correlation the control arm exists to measure."""
+    import json
+
+    sizes = {"big": 40, "small": 12, "one": 1}
+    (tmp_path / "tasks.json").write_text(json.dumps({"tasks": {
+        "big": {"admitted": True, "p_loop": ["p"] * 40},
+        "small": {"admitted": True, "p_loop": ["p"] * 12},
+        "one": {"admitted": True, "p_loop": ["p"]},
+        "ctl": {"admitted": False, "control": True, "p_loop": ["p"] * 9},
+    }}), encoding="utf-8")
+    assert analyse.load_pool_sizes(tmp_path) == sizes
+
+    rows = [row(task=t, killed_by="a", cpu_s=1.0)
+            for t in ("big", "small", "one", "ctl")]
+    cs = analyse.cells(rows, budget=4)
+    out = analyse.arms_by_pool_band(cs, sizes)
+    assert set(out) == {"degenerate", "small", "standard"}
+    assert out["standard"]["tasks"] == 1 and out["standard"]["pool_median"] == 40
+    # The control-arm cell is not in the frozen pool and must not be banded.
+    assert sum(d["cells"] for d in out.values()) == 3
