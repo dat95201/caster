@@ -8,7 +8,7 @@ import os
 import pytest
 
 from caster import cli
-from caster.keys import check_flag_partition
+from caster.keys import CellSpec, check_flag_partition
 
 
 def test_the_count_is_ten():
@@ -67,7 +67,7 @@ def test_no_grid_wide_flag_is_silently_outranked_by_an_arm():
     assert by_arm["km-explore0"].explore_p == 0.0        # the arm IS its explore_p
     assert by_arm["km-explore0"].prior == "jeffreys"     # ... but not its prior
     assert set(Grid.FORWARDED) <= {f for f in dests} | {"prior"}
-    assert "cost-only" in policies.ORDERINGS or True
+    assert "cost-only" in policies.ORDERINGS
 
 
 def test_resume_is_the_default_and_no_resume_is_the_flag():
@@ -81,7 +81,14 @@ def test_resume_is_the_default_and_no_resume_is_the_flag():
 def test_defaults_match_the_spec():
     args = cli.build_parser().parse_args(["evaluate"])
     assert args.seeds == "0,1,2"            # 3 seeds, not 5
-    assert args.explore_p == 0.15           # assert args.prior == "shipped"          # assert args.cold_start == "max"         # assert args.tie_break == "hash"         # assert args.budget == 20
+    assert args.explore_p == 0.15
+    assert args.prior == "shipped"
+    assert args.cold_start == "max"
+    # Asserted against the SPEC, not against a literal: a flag default and a
+    # spec default are one value in two places, and they drifted once already
+    # (spec "rank", flag "hash" — every CLI run would have kept the old order).
+    assert args.tie_break == CellSpec.tie_break == "rank"
+    assert args.budget == 20
     f = cli.build_parser().parse_args(["freeze"])
     # Every pre-treatment screen is OFF by default: the grid runs every sound
     # fault and `analyse` bands by pool size and contest era after the run.

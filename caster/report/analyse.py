@@ -62,7 +62,7 @@ import statistics
 from typing import Any, Callable, Iterable, Sequence
 
 from caster.exec.ledger import CaseLedger
-from caster.keys import PRIORS, schedule_tie_break
+from caster.keys import PRIORS, schedule_tie_break, schedule_tie_rank
 from caster.report.records import RoundRecord
 from caster.run import policies
 
@@ -568,7 +568,7 @@ def replay_policy(
     prior: str = "shipped",
     cold_start: str = "max",
     explore_p: float = 0.15,
-    tie_break: str = "hash",
+    tie_break: str = "rank",
     pool: Sequence[str] | None = None,
     coverage: dict[str, frozenset[int]] | None = None,
 ) -> dict[str, Any]:
@@ -588,8 +588,18 @@ def replay_policy(
     """
     probes = tuple(pool) if pool is not None else tuple(sorted(
         {p for v in kill_matrix.values() for p in v}))
-    tie = ((lambda n: schedule_tie_break(cell_key, n)) if tie_break == "hash"
-           else (lambda n: n))
+    # Mirrors `episode.run_episode` exactly, or a replay scores an order the
+    # grid never walks. "rank" is the default: at round 1 every score ties, so
+    # the tie-break is the whole order and pool position is the only answer
+    # that is not a claim. For "hash", `cell_key` is the TIE SEED — (task,
+    # seed) — never a CellSpec key, or the policy and the prior would enter the
+    # order and `compare_priors` would compare two different schedules.
+    if tie_break == "hash":
+        tie = lambda n: schedule_tie_break(cell_key, n)   # noqa: E731
+    elif tie_break == "name":
+        tie = lambda n: n                                 # noqa: E731
+    else:
+        tie = schedule_tie_rank(probes)
     ledger = CaseLedger(
         probes, prior=prior, cold_start=cold_start, explore_p=explore_p,
         tie_key=tie,
@@ -658,7 +668,7 @@ def compare_priors(
     for prior in sorted(PRIORS):
         per_task = [
             replay_policy(kill_matrix, cost_table, seq, policy=policy,
-                          prior=prior, cell_key=f"{task}|{policy}|{prior}")
+                          prior=prior, cell_key=task)
             for task, seq in sorted(sequences.items())
         ]
         ranks = [r["mean_rank_of_firing_probe"] for r in per_task

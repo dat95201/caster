@@ -195,6 +195,22 @@ class LLMClient:
         self.price_in = float(price_in if price_in is not None else os.environ.get("PRICE_IN_PER_MTOK", 0))
         self.price_out = float(price_out if price_out is not None else os.environ.get("PRICE_OUT_PER_MTOK", 0))
         self.spend_cap = float(spend_cap if spend_cap is not None else os.environ.get("BUDGET_USD_CAP", 100))
+        # `cap <= 0` means "no cap", the same as `gateway.SpendLedger`. Without
+        # this the two halves disagreed: an unpriced local backend passed the
+        # gateway and then died on `0.0 >= 0.0` here, on the FIRST call, before
+        # any spending existed to cap. Refused at construction when a price is
+        # set, because the expensive mistake is the other direction — an
+        # operator who writes 0 meaning "spend nothing" and is given unlimited
+        # spending on a hosted model.
+        self.uncapped = self.spend_cap <= 0.0
+        if self.uncapped and (self.price_in or self.price_out):
+            raise ValueError(
+                f"spend cap {self.spend_cap} with a non-zero price "
+                f"(in {self.price_in}/Mtok, out {self.price_out}/Mtok). "
+                f"0 means 'no cap', which is not what you want on a priced "
+                f"backend — set a real cap, or set both prices to 0 for an "
+                f"unpriced local backend."
+            )
         self._client: Any = None
         self._spent: float | None = None
         #: Calls that actually reached a model, counted here rather than read
@@ -391,8 +407,12 @@ class LLMClient:
                 f"call here is what phase separation exists to prevent."
             )
 
-        if self.spent() >= self.spend_cap:
-            raise BudgetExceeded(f"cap {self.spend_cap} USD reached")
+        if not self.uncapped and self.spent() >= self.spend_cap:
+            raise BudgetExceeded(
+                f"cap {self.spend_cap} USD reached (spent {self.spent():.4f}). "
+                f"Raise --spend-cap, or set it to 0 for an unpriced local "
+                f"backend."
+            )
 
         self.check_window(prompt, max_tokens)
 

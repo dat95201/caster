@@ -34,7 +34,7 @@ import time
 from typing import Any, Sequence
 
 from caster import paths
-from caster.keys import PRIORS, check_flag_partition
+from caster.keys import PRIORS, TIE_BREAKS, CellSpec, check_flag_partition
 from caster.run import policies
 
 
@@ -58,8 +58,14 @@ def _add_cell_knobs(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cold-start", dest="cold_start",
                    choices=("max", "median", "q75"), default="max")
     p.add_argument("--explore-p", dest="explore_p", type=float, default=0.15)
-    p.add_argument("--tie-break", dest="tie_break", choices=("hash", "name"),
-                   default="hash", help="'name' reproduces the filesystem-order artefact deliberately")
+    # The default is read OFF `CellSpec`, not written here. A flag default and
+    # a spec default are two places for one value, and they had already drifted:
+    # the spec said "rank" while this said "hash", so every CLI run would have
+    # kept the old order while the roster and the tests reported the new one.
+    p.add_argument("--tie-break", dest="tie_break", choices=TIE_BREAKS,
+                   default=CellSpec.tie_break,
+                   help="'hash' is the ABLATION that prices the benchmark's own "
+                        "file order; 'rank' (default) leaves it alone")
     # NOT exposed: --k-facts, --disclosure, --k-candidates. Every Block B arm
     # sets all three in its own overrides (the roster), so a grid-wide value
     # would lose to the arm on exactly the arms where it matters — a flag that

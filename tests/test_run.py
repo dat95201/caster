@@ -86,6 +86,33 @@ def test_no_mem_and_natural_scan_in_the_same_order():
     assert policies.arm("natural").update_ledger is True
 
 
+def test_round_one_is_the_natural_order_for_every_arm_but_random():
+    """Invariant: an EMPTY ledger means every arm walks the pool order.
+
+    At round 1 nothing has been observed, so every probe carries the identical
+    `K` and the identical `m̂`, every score ties, and the tie-break IS the whole
+    order. A policy has nothing to say there — so it must say nothing, and
+    `sorted` being stable means ranking on pool position is exactly that.
+
+    Any round-1 difference between two arms is therefore a fabricated one. The
+    hashed default this replaced put `policy` in the order (`CellSpec.key()`
+    writes every field), so the ARM'S NAME picked the first probe: measured on
+    the 3B pilot, `km` opened round 1 at mean natural-rank 6.56 while `natural`
+    opened at 1.00, and `fault-record`/`km-bucket` — which keep pool order for
+    their no-evidence bucket — opened at 1.00 like `natural`. Three arms did
+    one thing and three the opposite, and nothing in the roster said so.
+
+    `random` is excluded by construction: being a reshuffle is its definition.
+    `coverage` is excluded too — reference coverage is known before round 1, so
+    it is the one arm that legitimately has something to rank on.
+    """
+    same = [a.arm_id for a in policies.BLOCK_A
+            if a.ordering not in ("random", "coverage")]
+    assert len(same) >= 8
+    for arm_id in same:
+        assert policies.schedule(arm_id, ctx(led(), 1)) == list(POOL), arm_id
+
+
 def test_natural_is_pool_order_and_random_reshuffles_per_round():
     x = led()
     assert policies.schedule("natural", ctx(x, 9)) == list(POOL)

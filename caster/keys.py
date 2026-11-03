@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Sequence
 
 # ── Invariant 1: the draw nonce ──────────────────────────────────────────────
 # Round 1 carries no facts, so the steered prompt is byte-identical to the
@@ -155,7 +155,8 @@ class CellSpec:
     prior: str = DEFAULT_PRIOR
     cold_start: str = "max"
     explore_p: float = 0.15
-    tie_break: str = "hash"          # "hash" | "name" (the artefact, for the audit)
+    #: "rank" (the default) | "name" | "hash". See `schedule_tie_rank`.
+    tie_break: str = "rank"
 
     # steering knobs; all inert when the policy is unsteered
     steer_on: bool = False
@@ -185,7 +186,7 @@ class CellSpec:
             raise ValueError(f"unknown cold_start {self.cold_start!r}; one of {COLD_STARTS}")
         if self.disclosure not in DISCLOSURES:
             raise ValueError(f"unknown disclosure {self.disclosure!r}; one of {DISCLOSURES}")
-        if self.tie_break not in ("hash", "name"):
+        if self.tie_break not in TIE_BREAKS:
             raise ValueError(f"unknown tie_break {self.tie_break!r}")
         if self.candidate_policy not in ("exploit", "explore", "as_given"):
             raise ValueError(f"unknown candidate_policy {self.candidate_policy!r}")
@@ -237,12 +238,78 @@ class CellSpec:
         return dataclasses.replace(self, **kw)
 
 
-#: Bumped whenever a field is added to `CellSpec`. See `CellSpec.key`.
-KEY_VERSION = 1
+#: Bumped whenever a field is added to `CellSpec`, and whenever the MEANING
+#: of an existing key changes — Invariant 13 is "every value that changes a
+#: measurement is in a key or in `.meta.json`", and a silent re-meaning is the
+#: one way to break it without adding a field. v2: the schedule tie-break is
+#: seeded on (task, seed) instead of the cell key, so round 1 is identical
+#: across arms. v3: that was not enough — a shared neutral permutation is
+#: still a claim at a round where no arm has anything to claim, so the
+#: default tie-break is now POOL RANK and every arm but `random` walks the
+#: natural order at round 1. Same cells, same nonces, different results — the
+#: bump is what keeps rows of different versions from pooling.
+KEY_VERSION = 3
 
 
-def schedule_tie_break(cell_key: str, case_name: str) -> str:
-    """The tie-break decides the whole tail, so it may not be the name.
+#: How the schedule breaks a tie between probes of EQUAL score.
+#:
+#: "rank" — pool position. The default, and the only one that is not a claim.
+#: "name" — the case name. On ConDefects pool order IS `sorted(filenames)`, so
+#:          this equals "rank"; it is kept for an adapter whose pool order is
+#:          not alphabetical, where the two come apart.
+#: "hash" — a neutral permutation. The ABLATION, not the default: it is what
+#:          measures how much the benchmark's own file order is worth.
+TIE_BREAKS = ("rank", "name", "hash")
+
+
+def schedule_tie_rank(pool: Sequence[str]) -> Callable[[str], int]:
+    """Tie-break on POOL POSITION. The default, because of what round 1 is.
+
+    At round 1 every ledger is empty, so every probe carries the identical `K`
+    and the identical `m̂`, so every score ties and the tie-break IS the whole
+    order. A policy has nothing to say at that point — and a tie-break that
+    says something anyway is not neutrality, it is a fabricated difference
+    between arms that hold identical information.
+
+    `sorted` is stable, so ranking on pool position is exactly "leave it
+    alone": `natural`, `no-mem`, `fault-record`, `km-bucket`, `cost-only`,
+    `kill-only` and `km` all walk the SAME order at round 1, and any later
+    difference is evidence the ledger actually acquired. `random` is excluded
+    by construction — a reshuffled control is its entire definition.
+
+    This replaces a hashed default whose cost was measured: it put the arm's
+    NAME into the order (`CellSpec.key()` writes every field), so renaming `km`
+    to `km2` changed its cost, and the same logic under two seeds of that hash
+    moved an arm's CPU by 34% with nothing else changed. `fault-record` and
+    `km-bucket` never used it — their no-evidence bucket already keeps pool
+    order — so three arms did one thing and three the opposite.
+    """
+    rank = {name: i for i, name in enumerate(pool)}
+    return lambda n: rank.get(n, len(rank))
+
+
+def schedule_tie_seed(task: str, seed: int) -> str:
+    """The CRN unit, for `tie_break="hash"` — the ABLATION, not the default.
+
+    Deliberately the same shape as `draw_nonce`, and for the same reason: at
+    round 1 every Block A arm holds an empty ledger, so every arm carries the
+    identical `K` and the identical `m̂`, so every score ties and the tie-break
+    IS the order. If that tie-break is keyed on the cell, it is keyed on
+    `policy` — `CellSpec.key()` writes every field — and the arm's NAME decides
+    which probe runs first at the one moment the arm has nothing to decide
+    with. Renaming `km` to `km2` then changes its cost.
+
+    That also contradicted the design's own CRN rule one line over: the draw
+    nonce is policy-free so all 13 Block A arms share round 1's candidate, and
+    the schedule then split that shared candidate back apart by arm name.
+    `fault-record` and `km-bucket` never did — their no-evidence bucket keeps
+    pool order — so three arms did one thing and three the opposite.
+    """
+    return f"{task}|seed{seed}"
+
+
+def schedule_tie_break(tie_seed: str, case_name: str) -> str:
+    """The tie-break decides the whole tail, so it may not be the case name.
 
     Unseen cases all carry the same K and the same m̂, so they carry the
     identical score: the tie-break is not a tie-break, it is the total order of
@@ -250,14 +317,15 @@ def schedule_tie_break(cell_key: str, case_name: str) -> str:
     name makes that order the filesystem order — and that order is measured to
     be non-neutral: 78.4% of `natural`-order rounds begin on a `sample`/
     `example` case, because AtCoder's naming sorts the public, small, highly
-    discriminating cases first. The `km` arm would then contain `natural` inside
-    itself and the comparison would measure only the head.
+    discriminating cases first.
 
-    A sha256 over (cell_key, case_name) is deterministic, replayable, and
-    neutral with respect to that naming. `tie_break="name"` reproduces the
-    artefact deliberately, for the audit subset that measures its size.
+    `tie_seed` is `schedule_tie_seed(task, seed)` — NOT the cell key. Keying it
+    on the cell put `policy` in the hash; see that function. `tie_break="name"`
+    reproduces the filesystem order deliberately, for the audit subset that
+    measures its size: pool order IS `sorted(filenames)`, so "name" is pool
+    order exactly, not an approximation of it.
     """
-    return hashlib.sha256(f"{cell_key}|{case_name}".encode()).hexdigest()
+    return hashlib.sha256(f"{tie_seed}|{case_name}".encode()).hexdigest()
 
 
 # ── Invariant 6: every CLI flag is in exactly one declared list ──────────────

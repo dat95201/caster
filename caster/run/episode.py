@@ -71,7 +71,8 @@ from caster.bench.protocol import ProbeVerdict
 from caster.exec.ledger import CaseLedger
 from caster.exec.store import PatchStore, VerdictStore
 from caster.exec.verify import ScanResult, scan
-from caster.keys import CellSpec, draw_nonce, schedule_tie_break
+from caster.keys import (CellSpec, draw_nonce, schedule_tie_break,
+                         schedule_tie_rank, schedule_tie_seed)
 from caster.llm.client import (
     BackendUnreachable,
     CallMeta,
@@ -192,10 +193,19 @@ def run_episode(
     if not pool:
         raise ValueError(f"{spec.task}: empty probe pool — is the corpus frozen?")
 
-    tie = (
-        (lambda n: schedule_tie_break(cell_key, n)) if spec.tie_break == "hash"
-        else (lambda n: n)
-    )
+    # At round 1 every score ties, so the tie-break IS the order. The default
+    # ranks on pool position, which is `sorted` doing nothing: every arm but
+    # `random` walks the natural order until the ledger has something to say.
+    # "hash" is the ablation that prices the benchmark's own file order; it is
+    # seeded on (task, seed), never on the cell, or the ARM'S NAME would decide
+    # round 1. See `keys.schedule_tie_rank`.
+    if spec.tie_break == "hash":
+        tie_seed = schedule_tie_seed(spec.task, spec.seed)
+        tie = lambda n: schedule_tie_break(tie_seed, n)   # noqa: E731
+    elif spec.tie_break == "name":
+        tie = lambda n: n                                 # noqa: E731
+    else:
+        tie = schedule_tie_rank(pool)
     ledger = CaseLedger(
         pool,
         prior=spec.prior,

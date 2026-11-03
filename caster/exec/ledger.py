@@ -62,7 +62,7 @@ import math
 import random
 from typing import Callable, Iterable, Sequence
 
-from caster.keys import COLD_STARTS, DEFAULT_PRIOR, PRIORS
+from caster.keys import COLD_STARTS, DEFAULT_PRIOR, PRIORS, schedule_tie_rank
 
 #: Floor on m̂ in the ratio, so a case measured at 0.000s CPU cannot divide by
 #: zero and swamp the order.
@@ -173,10 +173,15 @@ class CaseLedger:
         self.prior_name = prior
         self.cold_start = cold_start
         self.explore_p = float(explore_p)
-        self._tie = tie_key or (lambda name: name)
+        names = list(case_names)
+        # Pool rank, not the case name. They agree on ConDefects (pool order IS
+        # `sorted(filenames)`) and come apart on any adapter whose listing is
+        # not alphabetical — and a default that silently disagrees with
+        # `episode.run_episode` is a second place for the rule to drift.
+        self._tie = tie_key or schedule_tie_rank(names)
         self._rng = rng or random.Random(0)
         self.input_chars = dict(input_chars or {})
-        self.stats: dict[str, CaseStat] = {n: CaseStat(name=n) for n in case_names}
+        self.stats: dict[str, CaseStat] = {n: CaseStat(name=n) for n in names}
         #: Program executions attributable to this ledger's scans. Reference
         #: executions and remeasurement runs are counted in their own buckets
         #: or Invariant 9's arithmetic fails on every honest run.

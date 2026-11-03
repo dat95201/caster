@@ -166,10 +166,22 @@ def test_both_priors_replay_over_one_matrix_with_no_model_calls():
     for r in rows:
         assert r["mean_rank_of_firing_probe"] is not None
         assert r["probes_per_refuted_round"] is not None
-    # Under homogeneous costs, Jeffreys' K=0.5 for an unseen probe outranks a
-    # proven refuter whose record has decayed — the full-pool sweep.
+    # Under HOMOGENEOUS costs the two priors give the IDENTICAL schedule, and
+    # this assertion used to claim otherwise. m̂ is the same for every probe, so
+    # the ratio ranks on K alone, and K is monotone in (k, n) under both priors:
+    # proven (0.429 | 0.750) > unseen (0.200 | 0.500) > survived-only
+    # (0.143 | 0.200). Same order, both columns.
+    #
+    # The difference the old assertion measured was manufactured: `compare_priors`
+    # seeded the tie on f"{task}|{policy}|{prior}", so the PRIOR'S NAME went into
+    # the hash and the two columns were two different schedules. Measured:
+    # shipped 1.875 vs jeffreys 2.375 with the prior in the tie, 2.125 vs 2.125
+    # without it. The whole 0.5 was the hash.
+    #
+    # A prior separates these two only when costs are heterogeneous. That is the
+    # case worth a fixture; it is not this one.
     assert (by["jeffreys"]["probes_per_refuted_round"]
-            > by["shipped"]["probes_per_refuted_round"])
+            == by["shipped"]["probes_per_refuted_round"])
 
 
 def test_summarise_puts_the_threats_first():

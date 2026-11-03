@@ -42,7 +42,7 @@ from typing import Any, Iterator, Sequence
 from caster import paths
 from caster.exec.sandbox import DEFAULT_TIMEOUT, protocol_fields
 from caster.exec.store import PatchStore, VerdictStore
-from caster.keys import CellSpec
+from caster.keys import KEY_VERSION, CellSpec
 from caster.llm.client import BackendUnreachable, LLMClient
 from caster.report.records import CellDone, CellWriter, load_done, needs_walk
 from caster.run import policies
@@ -206,6 +206,13 @@ def protocol_record(grid: Grid, client: LLMClient, *, shard: str = "0",
             "reasoning_effort": grid.reasoning_effort or None,
             "budget": grid.budget,
             "policies": list(grid.policies),
+            # The cell key's own version. It is written here as well as into
+            # every key because the ROW does not carry it: `rounds.jsonl` holds
+            # the CellSpec fields, which are identical across versions, so v1
+            # and v2 rows differ only in `episode_id` and would otherwise pool
+            # silently. `shard.merge_audit` refuses to join across a
+            # disagreement, which is what makes that a stop rather than a mean.
+            "key_version": KEY_VERSION,
         },
         "runtime": {
             **grid.protocol(),

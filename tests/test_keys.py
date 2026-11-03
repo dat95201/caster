@@ -14,6 +14,7 @@ from caster.keys import (
     check_flag_partition,
     draw_nonce,
     schedule_tie_break,
+    schedule_tie_seed,
 )
 
 
@@ -127,6 +128,33 @@ def test_tie_break_is_neutral_with_respect_to_naming():
     # ... and it is still deterministic and cell-specific.
     assert hashed == sorted(names, key=lambda n: schedule_tie_break("cell", n))
     assert hashed != sorted(names, key=lambda n: schedule_tie_break("other", n))
+
+
+def test_round_one_is_identical_across_arms():
+    """At round 1 every Block A arm holds an EMPTY ledger.
+
+    Empty ledger ⇒ identical K, identical m̂ ⇒ every score ties ⇒ the tie-break
+    IS the order. So a tie seeded on the cell key is seeded on `policy`
+    (`CellSpec.key()` writes every field) and the arm's NAME picks the first
+    probe at the one round the arm has nothing to pick with — renaming `km` to
+    `km2` would change its cost. It also contradicted `draw_nonce`, which is
+    policy-free precisely so every Block A arm shares round 1's candidate.
+    """
+    names = [f"{i:02d}.txt" for i in range(12)]
+    seeds = {
+        p: schedule_tie_seed("arc154_b/40787964", 0)
+        for p in ("km", "km-cs-median", "cost-only", "kill-only", "km-explore0")
+    }
+    assert len(set(seeds.values())) == 1, "the arm name must not reach the tie"
+    orders = {p: tuple(sorted(names, key=lambda n: schedule_tie_break(k, n)))
+              for p, k in seeds.items()}
+    assert len(set(orders.values())) == 1
+
+    # ... while a different cell still gets a different order.
+    other = schedule_tie_seed("arc154_b/40787964", 1)
+    assert tuple(sorted(names, key=lambda n: schedule_tie_break(other, n))) \
+        not in set(orders.values())
+    assert schedule_tie_seed("t", 0) != schedule_tie_seed("t", 1)
 
 
 def test_bad_values_are_refused_at_construction():
