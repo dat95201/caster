@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import pathlib
+import os
 
 import pytest
 
@@ -491,3 +493,36 @@ def test_preflight_checks_the_configured_gateway_without_being_told(
     capsys.readouterr()
     assert cli.main(["preflight"]) == 1
     assert "unreachable" in capsys.readouterr().err
+
+
+def test_dotenv_is_actually_loaded_and_the_shell_still_wins(tmp_path):
+    """`.env.example` says "copy to .env" and `python-dotenv` is a dependency —
+    but nothing called it, so every knob in that file was decorative.
+
+    It has to load at PACKAGE import: `paths`, `sandbox` and `llm.client` all
+    read the environment at import time, so loading in `main()` would be too
+    late for all three. And `override=False`, so `RUN_DIR=pilot-3b caster ...`
+    on the command line still beats the file.
+    """
+    import subprocess
+    import sys
+
+    (tmp_path / ".env").write_text(
+        "MODEL=from-dotenv\nSANDBOX_TIMEOUT_SEC=17\n", encoding="utf-8")
+    repo = str(pathlib.Path(__file__).resolve().parent.parent)
+    code = ("import os, caster;"
+            "from caster.exec.sandbox import DEFAULT_TIMEOUT;"
+            "print(os.environ.get('MODEL'), DEFAULT_TIMEOUT)")
+
+    env = {**os.environ, "CASTER_ROOT": str(tmp_path), "PYTHONPATH": repo}
+    env.pop("MODEL", None)
+    env.pop("SANDBOX_TIMEOUT_SEC", None)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, env=env, timeout=60)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split() == ["from-dotenv", "17.0"]
+
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, timeout=60,
+                         env={**env, "MODEL": "from-shell"})
+    assert out.stdout.split()[0] == "from-shell", "the file is a default, not an authority"
