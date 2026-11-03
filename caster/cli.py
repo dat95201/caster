@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import sys
 import time
@@ -462,9 +463,17 @@ def cmd_freeze(args: argparse.Namespace) -> int:
                          indent=2))
         return 0
 
+    t_first = time.time()
+
     def progress(i: int, n: int, name: str) -> None:
-        if i % 25 == 0 or i == n:
-            print(f"  gate {i}/{n}  {name}", file=sys.stderr, flush=True)
+        # Every fault on a small universe. A pilot of ten printed nothing at all
+        # until it finished, which reads exactly like a hang — and a freeze is
+        # the one stage slow enough that the difference matters.
+        if n <= 50 or i % 25 == 0 or i == n:
+            done = i - 1
+            rate = (time.time() - t_first) / done if done else 0.0
+            eta = f"  ~{rate * (n - done) / 60:.0f}m left" if done >= 2 else ""
+            print(f"  gate {i}/{n}  {name}{eta}", file=sys.stderr, flush=True)
 
     if not args.assemble:
         lo = max(1, args.first or 1)
@@ -882,7 +891,18 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print(json.dumps({"port": rep.port, "url": rep.base_url, "owned": rep.owned,
                           "adopted": rep.adopted, "read_only": rep.read_only}, indent=2))
     elif args.subcommand == "verify":
-        print(json.dumps({"port": port, "served_context": backend.verify(rep)}, indent=2))
+        served = backend.verify(rep)
+        print(json.dumps({"port": port, "served_context": served}, indent=2))
+        if not served:
+            # 0 is not a window, it is the absence of one — nothing is listening,
+            # or the server would not say. Printing it under exit 0 reads as
+            # "verified", which is the one thing this subcommand exists to deny.
+            print(f"[FAIL] nothing on port {port} reported a served context "
+                  f"window. Start the pool first (`caster serve gateway "
+                  f"--backend local --model ... --context ...`); a window that "
+                  f"cannot be read cannot be checked against the prompts.",
+                  file=sys.stderr)
+            return 1
     elif args.subcommand == "unload":
         print(json.dumps({"unloaded": backend.unload(rep)}, indent=2))
     elif args.subcommand == "stop":
@@ -951,7 +971,21 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     else:
         notes.append(f"disk {free / 1024**3:.1f} GiB free")
 
-    url = args.gateway_url or None
+    model = (args.gateway_url and "") or os.environ.get("MODEL", "").strip()
+    if not model:
+        failures.append(
+            "no MODEL set. `propose` and every steered arm die on the first "
+            "draw with `no model configured` — after the walk has started and "
+            "written rows. Put it in .env (an EXACT snapshot id for a hosted "
+            "model; `ollama list` gives the tag for a local one)."
+        )
+    else:
+        notes.append(f"model {model}")
+
+    # Default to the configured endpoint. Checking the gateway only when an
+    # operator remembers `--gateway-url` means the one check that costs nothing
+    # and catches a dead pool is the one that usually does not run.
+    url = args.gateway_url or os.environ.get("LLM_BASE_URL", "").strip() or None
     if url:
         try:
             with urllib.request.urlopen(url.rstrip("/").removesuffix("/v1") + "/healthz",

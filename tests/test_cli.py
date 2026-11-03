@@ -239,7 +239,8 @@ def test_preflight_fails_without_a_frozen_corpus(run_dir, capsys):
     assert "frozen corpus" in err
 
 
-def test_preflight_passes_once_the_corpus_exists(wired, run_dir, capsys):
+def test_preflight_passes_once_the_corpus_exists(wired, run_dir, capsys, monkeypatch):
+    monkeypatch.setenv("MODEL", "qwen2.5-coder:3b")   # preflight requires one
     assert _run("freeze", "--min-pool", "6", "--date-min", "2000-01-01") == 0
     capsys.readouterr()
     assert cli.main(["preflight"]) == 0
@@ -459,3 +460,34 @@ def test_freeze_tasks_refuses_a_name_that_is_not_in_the_checkout(wired, run_dir)
     with _pytest.raises(SystemExit) as e:
         _run("freeze", "--tasks", "abc001_a/1001,nope/404")
     assert "not in Code/" in str(e.value)
+
+
+def test_preflight_fails_on_a_missing_model(wired, run_dir, capsys, monkeypatch):
+    """The failure this exists to prevent: `propose` dies on the FIRST draw with
+    `no model configured`, after the walk started and wrote rows.
+
+    preflight costs nothing and runs before any of that, so an unset MODEL is a
+    preflight failure, not a traceback forty cells in.
+    """
+    monkeypatch.delenv("MODEL", raising=False)
+    assert _run("freeze", "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    assert cli.main(["preflight"]) == 1
+    assert "no MODEL set" in capsys.readouterr().err
+
+    monkeypatch.setenv("MODEL", "qwen2.5-coder:3b")
+    capsys.readouterr()
+    assert cli.main(["preflight"]) == 0
+    assert "model qwen2.5-coder:3b" in capsys.readouterr().out
+
+
+def test_preflight_checks_the_configured_gateway_without_being_told(
+        wired, run_dir, capsys, monkeypatch):
+    """Checking the pool only when an operator remembers `--gateway-url` means
+    the cheapest check that catches a dead backend is the one that never runs."""
+    monkeypatch.setenv("MODEL", "qwen2.5-coder:3b")
+    monkeypatch.setenv("LLM_BASE_URL", "http://127.0.0.1:1/v1")
+    assert _run("freeze", "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    assert cli.main(["preflight"]) == 1
+    assert "unreachable" in capsys.readouterr().err
