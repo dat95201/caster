@@ -107,6 +107,24 @@ class SpendLedger:
         self.log = pathlib.Path(log or paths.CALLS_LOG)
         self.price_in = float(price_in)
         self.price_out = float(price_out)
+        # A cap of 0 used to refuse the FIRST call — `spent (0.0) >= cap (0.0)`
+        # is true before anything is spent — which is how a free local backend
+        # ends up answering every request with 402 Payment Required.
+        #
+        # So `cap <= 0` means NO CAP, the way `LLM_CONTEXT_TOKENS=0` already
+        # means "no window check". But only where it is safe: with a non-zero
+        # price it is refused at construction instead, because the expensive
+        # mistake is the other direction — an operator who writes 0 meaning
+        # "spend nothing" and gets unlimited spending on a hosted model.
+        self.uncapped = self.cap <= 0.0
+        if self.uncapped and (self.price_in or self.price_out):
+            raise ValueError(
+                f"spend cap {self.cap} with a non-zero price "
+                f"(in {self.price_in}/Mtok, out {self.price_out}/Mtok). "
+                f"0 means 'no cap', which is not what you want on a priced "
+                f"backend — set a real cap, or set both prices to 0 for a "
+                f"local model."
+            )
         self._lock = threading.Lock()
         self._spent = self._rebuild()
 
@@ -128,9 +146,14 @@ class SpendLedger:
             return self._spent
 
     def check(self) -> None:
+        if self.uncapped:
+            return
         if self.spent >= self.cap:
-            raise RuntimeError(f"global spend cap {self.cap} USD reached "
-                               f"(spent {self.spent:.4f})")
+            raise RuntimeError(
+                f"global spend cap {self.cap} USD reached "
+                f"(spent {self.spent:.4f}). Raise --spend-cap, or set it to 0 "
+                f"for an unpriced local backend."
+            )
 
     def charge(self, usd: float) -> None:
         with self._lock:

@@ -293,3 +293,41 @@ def test_eight_concurrent_shards_missing_one_key_are_billed_once():
     assert results == [200] * 8
     assert up.calls == 1, f"one key, {up.calls} upstream calls — coalescing failed"
     assert gw.stats["service_timeout"] == 0
+
+
+def test_a_zero_spend_cap_does_not_refuse_a_free_backend(tmp_path):
+    """`spent (0.0) >= cap (0.0)` is true before anything is spent, so a cap of
+    0 used to answer the FIRST call with 402 Payment Required — on a local model
+    that costs nothing. The symptom reads as a billing problem on an endpoint
+    that has no billing.
+
+    `cap <= 0` therefore means NO CAP, the way `LLM_CONTEXT_TOKENS=0` already
+    means "no window check".
+    """
+    from caster.llm.gateway import SpendLedger
+
+    free = SpendLedger(0, log=tmp_path / "free.jsonl")
+    assert free.uncapped
+    free.check()                      # must not raise
+    free.charge(99.0)
+    free.check()                      # still must not raise
+
+
+def test_a_zero_cap_with_a_price_is_refused_at_construction(tmp_path):
+    """The expensive direction of the same mistake: an operator writes 0 meaning
+    "spend nothing" and gets unlimited spending on a hosted model. Refused where
+    it is cheap to refuse — before the gateway is up — rather than silently."""
+    import pytest as _pytest
+
+    from caster.llm.gateway import SpendLedger
+
+    with _pytest.raises(ValueError) as e:
+        SpendLedger(0, log=tmp_path / "paid.jsonl", price_in=0.15, price_out=0.6)
+    assert "not what you want" in str(e.value)
+
+    capped = SpendLedger(5, log=tmp_path / "ok.jsonl", price_in=0.15, price_out=0.6)
+    capped.check()
+    capped.charge(5.0)
+    with _pytest.raises(RuntimeError) as e2:
+        capped.check()
+    assert "spend cap" in str(e2.value)
