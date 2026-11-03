@@ -457,3 +457,57 @@ def test_a_malformed_checkout_is_a_g2_reject_not_a_dead_walk(adapter):
 
     t = gate_mod.gate_one_safe(adapter, "no_such/999", GateConfig())
     assert not t.admitted and t.failed_gate == "G2" and t.reason
+
+
+def test_the_test_data_splitter_covers_exactly_what_each_shard_gates(tmp_path):
+    """`Test/` is cut per FAULT range, but it is organised per CODING TASK.
+
+    The archive for a shard must hold the test directory of every task that
+    shard's faults belong to — otherwise the gate fails G2 on data that exists,
+    just not in the archive that was shipped. A task straddling a boundary is
+    in both archives on purpose.
+    """
+    import pathlib
+    import subprocess
+    import sys
+    import zipfile
+
+    from conftest import build_corpus
+
+    root = build_corpus(tmp_path / "c")
+    out = tmp_path / "zips"
+    repo = pathlib.Path(__file__).resolve().parent.parent
+    r = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "split_test_shards.py"),
+         "--shards", "2", "--condefects-root", str(root), "--out-dir", str(out)],
+        capture_output=True, text=True, timeout=180)
+    assert r.returncode == 0, r.stderr
+
+    from caster.bench.adapter import ConDefectsAdapter
+    ad = ConDefectsAdapter(root=root)
+    names = sorted(ad.tasks())
+    assert len(names) >= 2, "the fixture must have something to split"
+
+    from importlib import util
+    spec = util.spec_from_file_location(
+        "splitter", repo / "scripts" / "split_test_shards.py")
+    mod = util.module_from_spec(spec); spec.loader.exec_module(mod)   # type: ignore
+    # Contiguous, non-overlapping, covering 1..n exactly, remainder on the FIRST
+    # shards — sizes [3, 2, 2], not a short tail nobody checks.
+    assert mod.ranges(7, 3) == [(1, 3), (4, 5), (6, 7)]
+    assert mod.ranges(2864, 4) == [(1, 716), (717, 1432), (1433, 2148), (2149, 2864)]
+    flat = [i for lo, hi in mod.ranges(37, 5) for i in range(lo, hi + 1)]
+    assert flat == list(range(1, 38)), "a gap or an overlap is the whole risk"
+
+    for shard, (lo, hi) in enumerate(mod.ranges(len(names), 2)):
+        z = out / f"Test_shard{shard}.zip"
+        assert z.is_file(), f"{z.name} not written"
+        # entries are Test/<contest>/<LETTER>/in|out/<case>, so the test dir is
+        # the first three components
+        inside = {"/".join(n.split("/")[:3])
+                  for n in zipfile.ZipFile(z).namelist() if n.count("/") >= 3}
+        for fault in names[lo - 1:hi]:
+            want = ad.test_root(fault.split("/")[0])
+            assert want is not None
+            rel = want.relative_to(root)
+            assert str(rel) in inside, f"shard {shard} is missing {rel}"

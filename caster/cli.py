@@ -25,6 +25,7 @@ and `tests/test_invariants.py` both assert it (Invariant 6).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import sys
@@ -145,6 +146,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--pool-seed", dest="pool_seed", type=int, default=20_260_101)
     p.add_argument("--limit", type=int, default=None)
     p.add_argument("--overwrite", action="store_true")
+    p.add_argument("--tasks", default="",
+                   help="comma-separated fault names: freeze ONLY these, as a "
+                        "universe of their own. For a pilot — the digests and "
+                        "ranges then refer to this corpus and not the full one")
     p.add_argument("--first", type=int, default=None,
                    help="1-based inclusive range start over the candidates")
     p.add_argument("--last", type=int, default=None,
@@ -354,12 +359,90 @@ def gate_dir() -> pathlib.Path:
     return paths.POOL_DIR / "gate"
 
 
+def _audit_shard_ranges(files: Sequence[pathlib.Path], names: Sequence[str],
+                        owner: dict[str, int], here: str = "") -> None:
+    """Every record must come from the shard whose range contains it.
+
+    The failure this exists for: a sharded `Test/` tree plus a `caster freeze`
+    with no `--first/--last`. The gate walks all of it, finds no test data for
+    the faults that shard did not ship, and records them as G2 rejects. They
+    look exactly like real ones, `--assemble` sees no gap, and the corpus comes
+    out with most of the benchmark marked "no test data" — a number that is a
+    property of which archive was unpacked.
+
+    Also checks the shards agree on the candidate list, which catches a shard
+    run against a different `Code/` checkout.
+    """
+    ranges: dict[int, tuple[int, int]] = {}
+    digests: dict[int, str] = {}
+    for path in files:
+        side = path.with_suffix(".range.json")
+        if not side.is_file():
+            continue
+        try:
+            d = json.loads(side.read_text(encoding="utf-8"))
+            ranges[int(d["shard"])] = (int(d["first"]), int(d["last"]))
+            digests[int(d["shard"])] = str(d.get("candidate_order_sha256", ""))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            continue
+    if not ranges:
+        return      # a single unsharded pass records none, and needs none
+
+    distinct = {d for d in digests.values() if d}
+    if len(distinct) > 1:
+        raise SystemExit(
+            f"the shards disagree about the candidate list ({len(distinct)} "
+            f"different digests). They were run against different Code/ "
+            f"checkouts, so their ranges do not refer to the same faults."
+        )
+    if here and distinct and here not in distinct:
+        # Gating on a runner and assembling somewhere else is the normal way to
+        # work; a Code/ that differs between the two is the way it goes wrong.
+        # `--first 500` then means a different fault on each machine, and every
+        # range check below would be comparing indices into two different lists.
+        raise SystemExit(
+            f"the shards were gated against a different Code/ than this "
+            f"machine has (shards {sorted(distinct)[0][:12]}, here "
+            f"{here[:12]}). Assemble where the candidate list matches, or "
+            f"re-clone Code/ to the revision the runners used."
+        )
+
+    index = {n: i for i, n in enumerate(sorted(names), 1)}
+    strays: list[str] = []
+    for name, shard in owner.items():
+        i = index.get(name)
+        if i is None or shard not in ranges:
+            continue
+        lo, hi = ranges[shard]
+        if not (lo <= i <= hi):
+            strays.append(f"{name} (#{i}) from shard {shard} [{lo}-{hi}]")
+    if strays:
+        raise SystemExit(
+            f"{len(strays)} fault(s) were gated by a shard that does not own "
+            f"them, e.g. {'; '.join(strays[:3])}.\n"
+            f"That is what `caster freeze` with no --first/--last looks like on "
+            f"a machine holding only one Test_shardN.zip: every other fault is "
+            f"recorded as a G2 reject that nothing downstream can tell from a "
+            f"real one. Delete pool/gate/ on that machine and re-run it with "
+            f"its range."
+        )
+
+
 def cmd_freeze(args: argparse.Namespace) -> int:
     from caster.bench.gate import FrozenTask, GateConfig, assemble, gate_many, write
 
     paths.announce("freeze")
     adapter = _adapter(args)
     names = sorted(adapter.tasks())
+    if args.tasks:
+        # A named universe, for a pilot. The candidate list IS these faults, so
+        # `--first/--last`, `--assemble` and `pool_sha256` all refer to them and
+        # nothing silently compares a ten-fault corpus against the full one.
+        wanted = list(_csv(args.tasks))
+        unknown = [n for n in wanted if n not in set(names)]
+        if unknown:
+            raise SystemExit(f"not in Code/: {', '.join(unknown[:5])}")
+        names = sorted(wanted)
     if args.limit:
         names = names[: args.limit]
     if not names:
@@ -391,6 +474,18 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             raise SystemExit(f"--first {lo} --last {hi} selects nothing of "
                              f"{len(names)} candidates")
         done_path = gate_dir() / f"s{int(args.shard):02d}.jsonl"
+        # The range this shard OWNS, recorded beside its records. With a sharded
+        # `Test/` tree a missing range is not a slower freeze, it is a silently
+        # wrong corpus: the gate would walk every fault, find no test data for
+        # the ones this shard did not ship, and write them out as G2 rejects
+        # that `--assemble` has no way to tell from real ones.
+        done_path.parent.mkdir(parents=True, exist_ok=True)
+        done_path.with_suffix(".range.json").write_text(json.dumps({
+            "shard": int(args.shard), "first": lo, "last": hi,
+            "universe": len(names),
+            "candidate_order_sha256": hashlib.sha256(
+                "\n".join(names).encode()).hexdigest(),
+        }, indent=2), encoding="utf-8")
         gate_many(adapter, chunk, cfg, progress=progress, done_path=done_path)
         if args.first or args.last or args.shard:
             # A shard owns no corpus: G4, the control arm and `pool_sha256` all
@@ -408,16 +503,21 @@ def cmd_freeze(args: argparse.Namespace) -> int:
                          f"silently re-frozen is a corpus nobody can reproduce.")
 
     seen: dict[str, FrozenTask] = {}
+    owner: dict[str, int] = {}
     files = sorted(gate_dir().glob("s*.jsonl"))
     for path in files:
+        shard = int(path.stem[1:]) if path.stem[1:].isdigit() else -1
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
                 rec = json.loads(line)
                 seen[rec["name"]] = FrozenTask.from_dict(rec)
+                owner[rec["name"]] = shard
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
+    _audit_shard_ranges(files, names, owner,
+                        hashlib.sha256("\n".join(names).encode()).hexdigest())
     missing = [n for n in names if n not in seen]
     if missing:
         raise SystemExit(

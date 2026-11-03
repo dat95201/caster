@@ -174,6 +174,15 @@ class ConDefectsAdapter:
                 return candidate
         return None
 
+    def test_root(self, task_id: str) -> pathlib.Path | None:
+        """Public view of `_test_root`, for tools that package the test tree.
+
+        `scripts/split_test_shards.py` cuts `Test/` into per-shard archives and
+        must use the SAME lookup the loop uses, or a shard would ship test data
+        the gate then fails to find.
+        """
+        return self._test_root(task_id)
+
     def _probe_names(self, task_id: str) -> tuple[str, ...]:
         """Probe names for a coding task, from the directory listing alone."""
         hit = self._name_cache.get(task_id)

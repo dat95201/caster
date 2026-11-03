@@ -362,3 +362,100 @@ def test_assemble_refuses_a_gap(wired, run_dir, capsys):
         with _pytest.raises(SystemExit) as e:
             _run("freeze", "--assemble", "--min-pool", "6", "--date-min", "2000-01-01")
         assert "no gate record" in str(e.value)
+
+
+def test_assemble_refuses_a_shard_that_gated_outside_its_range(wired, run_dir, capsys):
+    """The silent corruption a sharded `Test/` tree invites.
+
+    Unpack `Test_shard0.zip`, forget `--first/--last`, and the gate walks every
+    fault: the ones that shard did not ship have no test data, so they are
+    recorded as G2 rejects indistinguishable from real ones. `--assemble` sees
+    no gap and writes a corpus whose funnel is a property of which archive was
+    unpacked. The range sidecar is what makes that detectable.
+    """
+    import json
+
+    import pytest as _pytest
+
+    n = json.loads(_capture(capsys, "freeze", "--dry-run"))["universe"]
+    if n < 2:
+        _pytest.skip("needs at least two candidates")
+    # shard 0 claims faults 1..1 but gates the whole universe, as an operator
+    # who dropped the range would.
+    assert _run("freeze", "--first", "1", "--last", "1", "--shard", "0",
+                "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    done = run_dir.POOL_DIR / "gate" / "s00.jsonl"
+    assert _run("freeze", "--shard", "0", "--last", str(n),
+                "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    (run_dir.POOL_DIR / "gate" / "s00.range.json").write_text(
+        json.dumps({"shard": 0, "first": 1, "last": 1, "universe": n}),
+        encoding="utf-8")
+    capsys.readouterr()
+    assert done.is_file()
+
+    with _pytest.raises(SystemExit) as e:
+        _run("freeze", "--assemble", "--min-pool", "6", "--date-min", "2000-01-01")
+    assert "does not own" in str(e.value)
+
+
+def test_assemble_refuses_shards_gated_against_a_different_code_checkout(
+        wired, run_dir, capsys):
+    """Gate on a runner, assemble at home — the normal way to work, and the way
+    it goes silently wrong if the two hold different `Code/` trees.
+
+    `--first 500` then names a different fault on each machine, so every range
+    and every index means something else. The candidate digest each shard
+    records is what makes that a refusal instead of a corpus.
+    """
+    import json
+
+    import pytest as _pytest
+
+    assert _run("freeze", "--first", "1", "--last", "1", "--shard", "0",
+                "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    side = run_dir.POOL_DIR / "gate" / "s00.range.json"
+    d = json.loads(side.read_text(encoding="utf-8"))
+    assert d["candidate_order_sha256"], "a shard must record what it gated"
+    d["candidate_order_sha256"] = "0" * 64        # as another checkout would
+    side.write_text(json.dumps(d), encoding="utf-8")
+    capsys.readouterr()
+
+    with _pytest.raises(SystemExit) as e:
+        _run("freeze", "--assemble", "--min-pool", "6", "--date-min", "2000-01-01")
+    assert "different Code/" in str(e.value)
+
+
+def test_freeze_tasks_makes_those_faults_the_whole_universe(wired, run_dir, capsys):
+    """A pilot corpus has to be a corpus, not a slice compared against another.
+
+    `--tasks` sets the candidate list, so `--dry-run`, the ranges and
+    `pool_sha256` all refer to these faults. Freezing ten of them and then
+    assembling against the full universe would report 2,854 missing.
+    """
+    import json
+
+    from caster.bench.adapter import ConDefectsAdapter
+
+    names = sorted(ConDefectsAdapter(root=run_dir.ROOT).tasks()) or None
+    full = json.loads(_capture(capsys, "freeze", "--dry-run"))["universe"]
+    assert full >= 2
+
+    one = json.loads(_capture(capsys, "freeze", "--dry-run",
+                              "--tasks", "abc001_a/1001"))
+    assert one["universe"] == 1 and one["last"] == 1
+
+    assert _run("freeze", "--tasks", "abc001_a/1001", "--min-pool", "6",
+                "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    doc = json.loads((run_dir.POOL_DIR / "tasks.json").read_text(encoding="utf-8"))
+    assert list(doc["tasks"]) == ["abc001_a/1001"]
+    assert doc["funnel"]["examined"] == 1
+
+
+def test_freeze_tasks_refuses_a_name_that_is_not_in_the_checkout(wired, run_dir):
+    """A typo in a ten-name list is otherwise a corpus one fault short."""
+    import pytest as _pytest
+
+    with _pytest.raises(SystemExit) as e:
+        _run("freeze", "--tasks", "abc001_a/1001,nope/404")
+    assert "not in Code/" in str(e.value)
