@@ -62,13 +62,29 @@ except ImportError:  # pragma: no cover - Windows
     resource = None  # type: ignore[assignment]
     _HAVE_RUSAGE = False
 
-# The instrument's declared capability, not a cost threshold. AtCoder inputs run
-# to ~2·10^5 items and a *correct* CPython solution can legitimately need tens of
-# seconds on the largest case, so a tighter clock would not be measuring the
-# program — it would be excluding the expensive end of the corpus. There is
+# The instrument's declared capability, not a cost threshold. There is
 # deliberately no second, stricter clock anywhere; this one reaches
 # `protocol_sha`, so changing it invalidates the verdict store by construction.
-DEFAULT_TIMEOUT = float(os.environ.get("SANDBOX_TIMEOUT_SEC", 60.0))
+#
+# **10s does NOT clear the corpus, and that is a deliberate choice — see
+# `docs/DECISIONS.md` §16.** Measured directly (CPython 3.13, serial,
+# `getrusage` user time, `correctVersion.py` of a real fault):
+#
+#     abc242_g   32.05s      abc233_g   29.94s      abc257_g   16.96s
+#
+# `abc233_g` is the clearest case: 2.5 KB of input, an O(N^4) loop nest, and an
+# AtCoder-shipped case literally named `killer_T_01.txt`. It produced the
+# correct 3-byte answer in 29.94s. At this clock it is a `timeout` instead —
+# a REFUTATION of a correct program. On the hardest slice of the corpus (77
+# tasks of tier G/H, largest input each) 5% ran past 10s.
+#
+# What makes that tolerable is that the error is systematic, not random:
+# slowness is a property of the TASK, known before any patch runs, and the same
+# every time. The fix is `reference_cpu_s` in the gate record and a per-fault
+# clock `max(SANDBOX_TIMEOUT_SEC, k * reference_cpu_s)`; until that lands, this
+# constant is a floor that mis-judges the heavy tail, and the tasks it
+# mis-judges must be reported rather than silently dropped.
+DEFAULT_TIMEOUT = float(os.environ.get("SANDBOX_TIMEOUT_SEC", 10.0))
 # Contest solutions recurse over the whole input (DFS on 10^5 nodes); CPython's
 # default 1000 would turn correct programs into RecursionErrors. Kept well under
 # the C stack's real ceiling — a submission that sets its own limit to 10^6, as

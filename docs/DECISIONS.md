@@ -525,3 +525,58 @@ corpus is a digest of something nobody can name.
 `--dry-run` prints the candidate count and exits. It is the one authority on
 how to cut ranges, for the same reason `scripts/fleet.sh` reads the universe
 size out of `evaluate --dry-run` rather than writing it down.
+
+## 25. `SANDBOX_TIMEOUT_SEC = 10`, knowing it does not clear the corpus
+
+`caster/exec/sandbox.py`.
+
+The clock is the instrument's declared capability, it enters `protocol_sha`, and
+it is a **wall-clock kill** while the reported cost is `getrusage` CPU. Those
+are two different quantities and conflating them is how the number below was
+got wrong three times before it was measured.
+
+**What the corpus actually needs.** Measured directly — CPython 3.13, serial, no
+contention, `%U` user CPU, running `correctVersion.py` of a real fault against a
+real case:
+
+| fault | input | CPU | result |
+|---|---|---|---|
+| `abc242_g` | 12.3 MB | **32.05 s** | correct |
+| `abc233_g` | **2.5 KB** | **29.94 s** | correct, 3-byte answer matches |
+| `abc257_g` | 1.0 MB | 16.96 s | correct |
+
+Across the hardest slice — 77 tasks of tier G/H, largest input each — the
+distribution was median 0.95 s, p90 8.49 s, and **5% past 10 s**.
+
+`abc233_g` is the one to keep in mind, because it refutes the intuition that
+slowness means big inputs. 2.5 KB, an `O(N^4)` loop nest, and an AtCoder-shipped
+case named `killer_T_01.txt` — the benchmark deliberately ships inputs built to
+kill slow solutions. AtCoder accepted that submission; it almost certainly ran
+under PyPy, and CPython is 10–30× slower on a loop nest like that.
+
+**So at 10 s the oracle refutes correct programs.** Not rarely and not randomly:
+on the tasks whose correct solution needs more than 10 s, it does so every time,
+for every patch, including the right one.
+
+**Why that is nevertheless the setting.** The error is *systematic*, which makes
+it a reportable property rather than noise: slowness is a property of the task,
+fixed, and knowable before any patch runs. A 60 s clock hides the same problem
+instead of solving it — it still has a tail it does not clear (77 faults of
+2 864 were measured, with one input each, by a heuristic — largest input by
+bytes — that `abc233_g` shows is the wrong one), while paying 6× on every hang.
+
+The real instrument is per-fault:
+
+    timeout(fault) = max(SANDBOX_TIMEOUT_SEC, k * reference_cpu_s(fault))
+
+`freeze` already executes the reference program on every usable case of every
+task, so `reference_cpu_s` is a field away and costs no CPU. Until it lands,
+this constant is a **floor**, and the faults it mis-judges are owed a line in
+the threats table — `exceeds_sandbox_timeout` already names them, and
+`analyse` must report that count beside every CPU figure rather than letting it
+sit inside one.
+
+**Changing it re-namespaces every verdict.** `protocol_fields` carries it into
+`protocol_sha`, so the whole of `verdicts/` is re-measured. That is the point of
+putting it in the key, and the reason to settle it before the corpus run rather
+than after.

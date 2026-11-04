@@ -59,7 +59,7 @@ construction:
 
 | variable | default | why you might change it |
 |---|---|---|
-| `SANDBOX_TIMEOUT_SEC` | `60` | The instrument's declared capability. A reference that cannot finish inside it marks its case `exceeds_sandbox_timeout`. |
+| `SANDBOX_TIMEOUT_SEC` | `10` | The instrument's declared capability. A reference that cannot finish inside it marks its case `exceeds_sandbox_timeout`. **It does not clear the corpus** — measured correct solutions reach 32s. See `DECISIONS.md` §16. |
 | `SANDBOX_RECURSION_LIMIT` | `10000` | Contest solutions recurse over the whole input; CPython's default 1000 turns correct programs into `RecursionError`. |
 
 And one that can corrupt a run silently:
