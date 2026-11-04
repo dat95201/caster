@@ -91,11 +91,11 @@ class CaseStat:
     n: int = 0          # candidates this case has been executed against
     k: int = 0          # ... of which it refuted
     s: float = 0.0      # total CPU seconds spent running it
-    #: Discovery order, which is what `fault-record` (FRTP) ranks on: the arm
-    #: is "proven refuters in the order they were discovered, then the rest in
-    #: natural order", and without this the order would silently become kill
-    #: rate, i.e. `kill-only` — collapsing the very baseline RQ2 decomposes
-    #: against.
+    #: When this case first refuted anything. RECORDED, not ranked on: no
+    #: policy reads it. `fault-record` ranks on the kill COUNT `k`, as FRTP
+    #: does (Qi et al., ICSM 2013). Kept because `snapshot()` carries it and a
+    #: discovery timeline is worth having in the record; delete both fields if
+    #: that stops being true.
     first_kill_round: int = -1
     last_kill_round: int = -1
     unusable: bool = False

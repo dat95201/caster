@@ -425,11 +425,15 @@ def arm_table(cs: Sequence[Cell]) -> list[dict[str, Any]]:
 
 
 #: RQ2 — one thing per step, so the effect can be attributed. `fault-record →
-#: km` changes two (a membership bit becomes a rate, and the rate is divided by
-#: cost), so it cannot attribute; this chain can.
+#: km` changes two (a count becomes a rate, and the rate is divided by cost),
+#: so it cannot attribute; this chain can. `fault-record -> kill-only` is the
+#: one step that matters in the memory itself: a COUNT of kills becomes a RATE,
+#: which is the first quantity that reads `n` — the evidence of NOT killing,
+#: which the whole FRTP family discards.
 DECOMPOSITION = (
     ("natural", "cost-only"),
     ("natural", "kill-only"),
+    ("natural", "fault-record"),
     ("fault-record", "kill-only"),
     ("kill-only", "km"),
     ("cost-only", "km"),

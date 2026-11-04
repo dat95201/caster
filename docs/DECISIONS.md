@@ -554,9 +554,26 @@ case named `killer_T_01.txt` — the benchmark deliberately ships inputs built t
 kill slow solutions. AtCoder accepted that submission; it almost certainly ran
 under PyPy, and CPython is 10–30× slower on a loop nest like that.
 
-**So at 10 s the oracle refutes correct programs.** Not rarely and not randomly:
-on the tasks whose correct solution needs more than 10 s, it does so every time,
-for every patch, including the right one.
+**The gate absorbs most of that, and it must be said precisely.** `gate_case`
+runs the *reference* twice at this same clock; a case whose reference does not
+finish is marked `exceeds_sandbox_timeout` and leaves the **pool**. So
+`abc233_g / killer_T_01.txt` is not a case on which a correct patch is wrongly
+refuted — at a 10 s clock it is not a case at all. One clock, applied to the
+reference first, is what keeps the oracle sound.
+
+What the clock really buys, then, is not unsoundness but **selection**: the
+corpus silently shrinks, and it shrinks *against the heavy end*. Cases leave
+pools, pools shrink below what a scheduling experiment can use, and a fault
+whose pool empties leaves the corpus altogether. The faults that go are exactly
+the `O(N^4)`-under-CPython ones — the same bias that made a 10-task pilot with
+no tier E/F/G task report that correct computation finishes in under 5 s.
+`freeze`'s funnel counts this (`exceeds_sandbox_timeout`) and `analyse` bands by
+`|P_loop|`, so it is visible — but only if it is read.
+
+The residual soundness risk is narrower and real: a case whose *reference*
+finishes inside the clock while a *correct patch* using a slower algorithm does
+not. That one is a genuine false refutation, it cannot be gated away, and
+nothing currently counts it.
 
 **Why that is nevertheless the setting.** The error is *systematic*, which makes
 it a reportable property rather than noise: slowness is a property of the task,
@@ -580,3 +597,62 @@ sit inside one.
 `protocol_sha`, so the whole of `verdicts/` is re-measured. That is the point of
 putting it in the key, and the reason to settle it before the corpus run rather
 than after.
+
+## 26. `fault-record` ranks on the kill count, because FRTP does
+
+For one revision this arm ranked its proven bucket by `first_kill_round` — the
+round in which a case first refuted anything — and never read `k`. The docstring
+said so plainly, and a test pinned it. The justification was that RQ2 needed
+`fault-record → kill-only` to change exactly one thing: a membership bit
+becoming a rate.
+
+The justification was sound and the label was not. The arm is declared in the
+registry and in the policies table as FRTP, the memory baseline, and FRTP is
+Qi, Mao & Lei, *Efficient Automated Program Repair through Fault-Recorded
+Testing Prioritization*, ICSM 2013, doi:10.1109/ICSM.2013.29. That method ranks
+on the **failing count**: "ranks the test cases based on the test case failing
+count" — the number of validated patches a case has already falsified. Two
+independent secondary sources state it the same way: Lou et al., TOSEM 2024
+(33(7), Art. 180), and Kim & Kim, *Modification Point Aware Test Prioritization*
+(Applied Sciences 10(5), 1593), whose "patch killing count is nothing but a
+number of times a test case fails a program variant" is the same quantity.
+
+Discovery order is a different method, and a weaker one: it compresses the
+record to one bit and then freezes the order, so a case that refutes fifty
+patches never overtakes one that refuted a single patch earlier. Weaker in the
+direction that matters — a baseline below the published one inflates the margin
+of everything measured against it.
+
+The discovery-order variant was kept, briefly, as an arm of its own
+(`first-kill`), on the argument that RQ2's ladder wanted a rung where the
+record is one bit. It is deleted. Replayed over 68 ceg-mem tasks and 4,670
+patches it costs 2,423 s against the count's 2,354 s — **−2.8%, CI95
+[−9.6, +5.4]** — so the rung was one nobody could read, and an ablation of ours
+in a baseline's clothes is exactly the confusion this entry exists to end. The
+ladder keeps the step that carries meaning:
+
+    fault-record → kill-only
+
+a COUNT of kills becomes a RATE, and the rate is the first quantity that reads
+`n`. FRTP's whole family — bit or count — discards the evidence of NOT killing:
+it cannot tell a case that failed to refute ten patches from one that was never
+run. `first_kill_round` and `last_kill_round` survive in `snapshot()` as a
+discovery timeline; no policy reads either.
+
+**`KEY_VERSION` stays at 3, and that is a measurement, not a judgement call.**
+The order a case is scheduled in is a measured quantity, so re-meaning an arm
+normally forces a bump (Invariant 13). This change re-means `fault-record` —
+and `fault-record` has never been run. Every `rounds.jsonl` in `data/` holds
+`natural`, `no-mem`, `random`, `cost-only`, `kill-only` and `km`, and no other
+arm; none of those six reads a field this fix touched, so the meaning of zero
+existing keys moved.
+
+Bumping anyway would not have been the safe choice, it would have been the
+destructive one: `cells.done` stores the whole cell key, `v3|task=...`, so a
+bump makes every finished cell read as unrun. A completed `caster propose
+--policies no-mem` pass would be re-drawn from scratch and `shard.merge_audit`
+would refuse to join the old shard's `key_version: 3` against the new one.
+
+The rule to apply next time, in this order: grep the runs for the arm's name
+first; if rows exist, their meaning changed and the version MUST move; if none
+do, the arm has no history to protect and the version MUST NOT move.

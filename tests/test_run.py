@@ -122,15 +122,23 @@ def test_natural_is_pool_order_and_random_reshuffles_per_round():
     assert r1 == policies.schedule("random", ctx(led(), 1))   # seeded, reproducible
 
 
-def test_fault_record_uses_discovery_order_not_kill_rate():
-    """RQ2 needs `fault-record → kill-only` to change exactly one thing: a
-    membership bit becoming a rate."""
+def test_fault_record_ranks_on_kill_count_as_the_paper_does():
+    """FRTP ranks on the COUNT of patches a case has falsified.
+
+    Qi, Mao & Lei, ICSM 2013: "ranks the test cases based on the test case
+    failing count". This arm ranked on `first_kill_round` for one revision,
+    which freezes the order at discovery and leaves the count unread — a
+    weaker baseline than the published one, and weaker in the direction that
+    inflates whatever is compared against it. Replayed offline the two differ
+    by −2.8%, CI95 [−9.6, +5.4]: small, and the objection is to the claim, not
+    to the effect size.
+    """
     x = led()
     x.update(POOL[9], refuted=True, cpu_s=0.1, round_index=1)   # discovered first
     for _ in range(6):
         x.update(POOL[2], refuted=True, cpu_s=0.1, round_index=4)  # kills more
     order = policies.schedule("fault-record", ctx(x, 5))
-    assert order[0] == POOL[9] and order[1] == POOL[2]
+    assert order[0] == POOL[2] and order[1] == POOL[9]
     assert policies.schedule("kill-only", ctx(x, 5))[0] == POOL[2]
 
 

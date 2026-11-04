@@ -126,8 +126,13 @@ Two framing points govern how the roster is read:
   highly discriminating cases first, and 78.4% of `natural` rounds start on one.
   `random` is the control.
 * **An ablation chain changes one thing per step.** `fault-record → km` changes
-  two — a membership bit becomes a rate, and the rate is divided by cost — so it
-  cannot attribute. `natural → {cost-only, kill-only} → km` can.
+  two — a count becomes a rate, and the rate is divided by cost — so it cannot
+  attribute. `natural → {cost-only, kill-only} → km` can, and
+  `fault-record → kill-only` isolates the one step inside the memory that
+  matters: a count of kills becomes a rate, which is the first quantity that
+  reads `n` — the evidence of NOT killing, which FRTP discards.
+* **`fault-record` IS the published baseline.** It is FRTP (Qi, Mao & Lei,
+  ICSM 2013) and ranks on the kill count, as the paper does.
 
 ## The invariants
 
@@ -189,7 +194,7 @@ likely to go first:
 pytest -q
 ```
 
-`pytest` runs **CASTER's own unit tests** — not the experiment. 253 of them,
+`pytest` runs **CASTER's own unit tests** — not the experiment. 257 of them,
 seconds, no network and no model. They are unrelated to the ~1,244-fault corpus
 that `caster freeze` produces and `caster evaluate` walks.
 

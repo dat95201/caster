@@ -116,9 +116,11 @@ def test_update_is_o1_and_accumulates():
     assert led.M("a") == pytest.approx(1.0)
 
 
-def test_first_kill_round_is_discovery_order():
-    """`fault-record` ranks on it; without it the arm silently becomes
-    `kill-only` and RQ2's decomposition loses a step."""
+def test_first_kill_round_is_recorded_but_never_ranked_on():
+    """It goes into `snapshot()` as a discovery timeline and nothing orders by
+    it. `fault-record` ranks on the kill COUNT `k`, as FRTP does; for one
+    revision it ranked on this field instead, which is the bug this test now
+    documents rather than the behaviour it used to pin."""
     led = make()
     led.update("b", refuted=True, cpu_s=0.1, round_index=2)
     led.update("a", refuted=True, cpu_s=0.1, round_index=5)

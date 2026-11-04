@@ -13,7 +13,7 @@ a replay.
 | 1 | `no-mem` | natural order, **ledger never updated** | floor |
 | 2 | `natural` | the order the oracle hands probes over (pool order) | RQ1 — *the incumbent*, **not** a neutral control |
 | 3 | `random` | seeded shuffle, reseeded per round | RQ1 — the uninformed baseline |
-| 4 | `fault-record` | proven refuters in **discovery** order, then the rest in natural order | RQ1 — FRTP, the memory baseline |
+| 4 | `fault-record` | proven refuters by **kill count** descending, then the rest in natural order | RQ1 — FRTP (Qi et al., ICSM 2013), the memory baseline |
 | 5 | `cost-only` | m̂ ascending, no K | RQ2 — the cost marginal |
 | 6 | `kill-only` | K descending, no cost | RQ2 — the kill-rate marginal |
 | 7 | `coverage` | additional-greedy over reference coverage | RQ1 — the traditional prioritiser |
@@ -139,18 +139,33 @@ def order_random(ctx: PolicyContext) -> list[str]:
 
 
 def order_fault_record(ctx: PolicyContext) -> list[str]:
-    """FRTP — proven refuters in DISCOVERY order, then the rest in natural order.
+    """FRTP — proven refuters by KILL COUNT descending, then the rest in natural
+    order.
 
-    Discovery order, not kill-rate order. Ranking the proven bucket by rate
-    would make this `kill-only` with a different head, and RQ2's decomposition
-    needs `fault-record → kill-only` to change exactly one thing: a membership
-    bit becoming a rate.
+    Qi, Mao & Lei, *Efficient Automated Program Repair through Fault-Recorded
+    Testing Prioritization*, ICSM 2013, pp. 180-189, doi:10.1109/ICSM.2013.29 —
+    the method implemented in TrpAutoRepair. It "ranks the test cases based on
+    the test case failing count": the count of validated patches this case has
+    already falsified. A count, not a rate and not a recency.
+
+    This arm used to rank the proven bucket by `first_kill_round`, which is a
+    DIFFERENT method: it reduces the record to one bit and then freezes the
+    order at discovery, so a case that goes on to refute fifty patches never
+    overtakes one that refuted a single patch earlier. That is not what the
+    paper does, and a baseline weaker than the published one inflates the
+    margin of whatever is compared against it.
+
+    The discovery-order variant was briefly kept as an arm of its own. It is
+    gone: replayed over 68 ceg-mem tasks and 4,670 patches it cost 2,423 s
+    against the count's 2,354 s — −2.8%, CI95 [−9.6, +5.4] — so the rung it
+    added to RQ2's ladder was one nobody could read, and it was an ablation of
+    ours wearing a baseline's clothes.
     """
     names = _usable(ctx)
     stats = ctx.ledger.stats
     rank = ctx.rank()
     proven = [n for n in names if stats[n].proven]
-    proven.sort(key=lambda n: (stats[n].first_kill_round, rank.get(n, 0)))
+    proven.sort(key=lambda n: (-stats[n].k, rank.get(n, 0)))
     rest = [n for n in names if not stats[n].proven]
     return proven + rest
 
@@ -284,7 +299,8 @@ ARMS: dict[str, Arm] = {a.arm_id: a for a in [
     Arm(3, "random", "random", "A", "RQ1",
         "the uninformed control, reseeded per round"),
     Arm(4, "fault-record", "fault-record", "A", "RQ1",
-        "FRTP — the memory baseline"),
+        "FRTP (Qi, Mao & Lei, ICSM 2013, doi:10.1109/ICSM.2013.29) — proven "
+        "refuters by kill count descending. The published memory baseline"),
     Arm(5, "cost-only", "cost-only", "A", "RQ2", "the cost marginal"),
     Arm(6, "kill-only", "kill-only", "A", "RQ2", "the kill-rate marginal"),
     Arm(7, "coverage", "coverage", "A", "RQ1", "the traditional prioritiser"),
