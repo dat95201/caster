@@ -1,0 +1,258 @@
+\chapter{Theoretical Background}
+\label{ch:background}
+
+This chapter sets out the formal objects the proposal manipulates: the repair
+loop and the two separate costs it incurs, the prioritisation strategies it
+inherits, the typed memory it starts from, the estimator it ranks by, and the
+accounting rules that make the measurement meaningful. Implementation specifics
+are deferred to Chapter~\ref{ch:framework}.
+
+\section{The Repair Loop and Its Two Costs}
+\label{sec:loop}
+
+Fix a faulty program $s_0$ and a finite \emph{pool} of test cases
+$P = \{x_1,\dots,x_n\}$. Each $x \in P$ carries a reference output, so a
+candidate program $s$ either agrees with the reference on $x$ or does not; in
+the latter case $x$ is said to \emph{refute} (or \emph{kill}) $s$.
+
+\begin{definition}[Repair episode]
+An episode with budget $B$ is the sequence, for $t = 1,\dots,B$: the proposer
+draws a candidate $s_t \sim \pi(\cdot \mid \mathcal{H}_{t-1})$ from its history
+$\mathcal{H}_{t-1}$; the oracle probes $s_t$ against cases from $P$ in some
+order and stops at the first refuting case; if no case refutes $s_t$ the
+episode \emph{accepts} and stops.
+\end{definition}
+
+The episode spends two different resources, and conflating them is the error
+this proposal is organised around.
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{Proposer cost}, paid in model tokens and therefore in money. This
+is what \textsc{CigaR} optimises, reporting $127$K tokens per bug against a
+$467$K baseline~\citep{hidvegi2024cigar}.
+\item \textbf{Oracle cost}, paid in CPU seconds executing candidate programs.
+This is what \frtp~\citep{qi2013frtp} and this proposal optimise.
+\end{itemize}
+
+Writing $c(x)$ for the CPU cost of one probe on case $x$ and $\sigma_t$ for the
+order the oracle uses in round $t$, the oracle cost of the episode is
+\begin{equation}
+C \;=\; \sum_{t=1}^{T} \; \sum_{j=1}^{r_t} c\!\left(\sigma_t(j)\right),
+\qquad
+r_t \;=\; \min\{\, j : \sigma_t(j) \text{ refutes } s_t \,\},
+\label{eq:oracle-cost}
+\end{equation}
+with $r_t = n$ when nothing refutes. Two facts about
+Equation~\eqref{eq:oracle-cost} drive the whole design. First, the order
+$\sigma_t$ is free to choose and is the only term the scheduler controls.
+Second, minimising the \emph{number} of probes $\sum_t r_t$ is not the same
+objective as minimising $C$ unless $c$ is constant --- and
+Section~\ref{sec:pilot-arena} shows it is very far from constant.
+
+\begin{definition}[Soundness of a schedule]
+\label{def:soundness}
+A patch is accepted only after surviving every usable case in $P$. Acceptance
+is therefore independent of $\sigma_t$: no ordering can accept a patch that
+another ordering rejects.
+\end{definition}
+
+Definition~\ref{def:soundness} is what makes a pure cost claim possible. Any
+difference in repair rate between two scheduling policies is a bug, not a
+finding, and Section~\ref{sec:soundness} reports the check.
+
+\section{Test-Case Prioritisation}
+\label{sec:tcp}
+
+\citet{rothermel2001prioritizing} formalised prioritisation as the search for a
+permutation of $P$ maximising a rate-of-detection award function, and
+introduced the two greedy families still in use. \emph{Total} strategies rank
+$x$ by a static property --- usually $|\mathrm{cov}(x)|$, the set of statements
+it exercises. \emph{Additional} strategies rank by the marginal gain
+\begin{equation}
+g(x \mid \mathcal{C}) \;=\; \bigl|\mathrm{cov}(x) \setminus \mathcal{C}\bigr| ,
+\label{eq:additional}
+\end{equation}
+where $\mathcal{C}$ is what the already-scheduled prefix covers, re-ranking
+after every pick. The additional family ($\mathrm{RTP_{add}}$) is the stronger
+of the two in most empirical comparisons and is the one carried into this study
+as the \code{coverage} arm.
+
+\citet{elbaum2001cost} noted that the standard award function assumes uniform
+test costs and fault severities, and proposed a cost-cognizant variant. That
+observation is the ancestor of the denominator in \km. The difference is that
+their cost is an input; here it is a statistic the loop accumulates about
+itself.
+
+\section{Fault-Recorded Prioritisation and What It Discards}
+\label{sec:frtp}
+
+\frtp~\citep{qi2013frtp} ranks each case by its \emph{failing count}: the
+number of candidate patches it has already falsified. The information is free,
+because the repair loop produces it as a by-product. Writing $k(x)$ for that
+count, \frtp\ schedules in decreasing $k$.
+
+Two things are missing from $k$, and naming them precisely is what generates
+this proposal's score function.
+
+\paragraph{The denominator.} Let $n(x)$ be the number of times $x$ has been
+\emph{run}. A count $k(x)$ without $n(x)$ cannot distinguish a case that was
+run ten times and refuted nothing from a case that was never run: both have
+$k = 0$. The ratio $k(x)/n(x)$ is the first quantity that reads the evidence of
+\emph{not} killing, and it is also the first that lets a case whose early
+record was luck decay back towards the population mean.
+
+\paragraph{The cost.} Nothing in $k$ knows that one probe takes
+0.01\,s and another 7.5\,s. Under a uniform-cost
+assumption that is harmless. Section~\ref{sec:pilot-arena} measures the
+assumption and finds it false by nearly two orders of magnitude, and ---
+worse --- finds that cost and kill rate are \emph{positively} correlated within
+a task, so a policy that maximises kill probability is systematically drawn
+towards the expensive end of the pool.
+
+\section{The Premise: \texorpdfstring{\cegmem}{CEGMem}'s Typed Memory}
+\label{sec:cegmem-premise}
+
+The immediate predecessor of this work is \cegmem, a counterexample-guided
+repair loop with a memory of refuted attempts. Its central object is a
+\emph{failure type} function
+\begin{equation}
+\theta(s) \;=\; \bigl(\underbrace{\ell(s_0, s)}_{\text{edit location}},\;
+                      \underbrace{\varphi(s)}_{\text{violated property}}\bigr),
+\label{eq:theta}
+\end{equation}
+where $\ell$ is computed by diffing the candidate against the \emph{faulty}
+source it started from --- never against the reference --- and $\varphi$ is the
+exception class, a timeout, or a shape of output divergence. Two granularities
+ship: a coarse one whose location is always \code{whole\_program}, and a fine
+one whose location is the changed line range \code{L}$a$--\code{L}$b$, falling
+back to a \code{wholesale} tag when the edit is too large or too scattered to
+name one place. Because $\ell$ is a pure diff, it is computable on a fresh
+candidate \emph{before} any sandbox run, which is what lets the memory act as a
+guard.
+
+The study ran $309$ ConDefects tasks $\times$ $5$ seeds at budget $20$
+($1{,}545$ cells per arm) with \code{gpt-4o-mini}, comparing three memory
+conditions. Table~\ref{tab:cegmem} gives the result.
+
+\begin{table}[H]
+\centering
+\caption{\cegmem\ main grid: $309$ tasks, $5$ seeds, budget $20$,
+$1{,}545$ paired cells per arm, \code{gpt-4o-mini}. Per-episode means.}
+\label{tab:cegmem}
+\small
+\begin{tabular}{@{}l r r r r r@{}}
+\toprule
+Arm & Repair rate & Oracle calls & Sandbox runs & Guard (s) & Prompt tokens\\
+\midrule
+no memory        & 0.5262 & 11.1094 & 92.58 & 0.00  & 5{,}365\\
+untyped memory   & 0.5256 & 1.4615  & 38.15 & 14.50 & 5{,}370\\
+\textbf{typed memory} & \textbf{0.5812} & \textbf{1.5709} & 39.47 & 14.15 & 7{,}005\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Typed memory beat untyped on repair rate by a wide margin --- $144$ cells
+flipped to success against $58$ the other way, $p = 1.3\times10^{-9}$ --- and
+both memories cut oracle calls by about $7\times$ against no memory at all. The
+index behaved as designed: over $23{,}975$ guarded rounds the type-matched
+bucket was non-empty $59.4\,\%$ of the time, and when it was, a stored
+counterexample still refuted the new candidate $97.6\,\%$ of the time.
+
+\paragraph{What that study left open, and why this one exists.} Read the
+columns in the right order and the residual is obvious. The memory removed
+$86\,\%$ of oracle \emph{calls}, but sandbox \emph{runs} fell only from
+$92.6$ to $39.5$ --- a factor of $2.35$, not $7$ --- and the guard itself
+consumed 14.15\,s per episode. The reason is structural. A
+class-keyed index decides \emph{whether} to pay the oracle; once the decision
+is ``pay'', the oracle still walks the pool in whatever order the benchmark
+shipped. Nothing in $\theta$ is a test case, so nothing in $\theta$ can order
+one.
+
+A second residual is on the proposer side. Typed steering cut the duplicate
+patch rate only from $0.2653$ to $0.2358$, and it did so while growing the
+prompt by a factor of $1.30$. The steering was phrased as a prohibition ---
+``this class of edit has been eliminated'' --- because a class is a category
+and a category can only be forbidden. That framing is also known to misfire:
+in \cegmem's own measurements a failure class the model would otherwise emit
+$5.4\,\%$ of the time was emitted $14.7\,\%$ of the time once the prompt named
+it, a $2.7\times$ priming inversion. A test case, being an observation, can
+instead be stated as a requirement to satisfy, which is the hypothesis RQ3
+tests.
+
+\section{The \texorpdfstring{\km}{K/m} Index}
+\label{sec:index}
+
+Give every case $x$ two online statistics maintained by the loop: $n(x)$, the
+number of times $x$ has been run, and $k(x)$, the number of those runs that
+refuted the candidate. Treat the per-case kill probability as a Bernoulli
+parameter with a Beta conjugate prior, so that the posterior mean is
+\begin{equation}
+K(x) \;=\; \frac{k(x) + \alpha}{n(x) + \alpha + \beta}.
+\label{eq:K}
+\end{equation}
+Two priors ship. Jeffreys' invariant prior $\mathrm{Beta}(\tfrac12,\tfrac12)$
+\citep{jeffreys1946invariant} is the standard non-informative choice, but it
+places an unseen case at $K = 0.5$, which outranks a proven refuter whose
+record has decayed --- $k=2, n=10$ gives $K = 0.227$ --- and under homogeneous
+costs that degenerates into a full-pool sweep. The default is therefore
+$\mathrm{Beta}(\tfrac12, 2)$, prior mean $0.2$: above this corpus's base rate
+and below one half. Exploration is handled explicitly by an
+$\varepsilon$-greedy term rather than smuggled into the prior.
+
+Let $\hat{m}(x)$ be the running mean CPU cost of the probes actually paid on
+$x$, with an unseen case taking the cold-start value defined in
+Section~\ref{sec:ledger}. The schedule ranks by
+\begin{equation}
+\mathrm{score}(x) \;=\; \frac{K(x)}{\hat{m}(x)^{\,c}},
+\qquad c \ge 0,
+\label{eq:score}
+\end{equation}
+where $c = 1$ recovers the plain ratio \km, $c = 0$ recovers a pure kill-rate
+policy, and intermediate $c$ interpolates. Section~\ref{sec:pilot-sweep}
+measures the exponent rather than assuming it.
+
+The intuition is a rate of return: $K(x)$ is the probability that spending
+$\hat m(x)$ seconds ends the round, so $K/\hat{m}$ is expected refutations per
+CPU second, and greedily taking the highest-return probe first is the natural
+heuristic for Equation~\eqref{eq:oracle-cost}. Two properties keep it honest.
+The order is built \emph{once} per round from the ledger as it stood when the
+round began, so nothing is re-ranked mid-round; and only probes actually
+\emph{paid} update $n$, while only the refuting probe updates $k$.
+
+\section{Cost Accounting}
+\label{sec:accounting}
+
+Three rules govern every number reported in this proposal, and each exists
+because violating it produces a plausible wrong answer rather than an error.
+
+\begin{enumerate}[leftmargin=*,itemsep=4pt]
+\item \textbf{CPU time, not wall clock.} Cost is the delta of
+\code{getrusage(RUSAGE\_CHILDREN)} across the probe. Wall clock is
+contaminated by sibling processes, which would make $\hat{m}$ a function of
+machine load; since the measurement runs several workers in parallel, using
+wall clock would make the learned cost model an artefact of the harness.
+\item \textbf{Executions reported alongside, never instead.} The prioritisation
+literature reports executions for reproducibility~\citep{lou2024aprregression},
+so both units are reported for every arm --- and
+Section~\ref{sec:pilot-measured} shows why that matters.
+\item \textbf{Timeouts are quarantined.} A contest solution can exceed the
+clock by being correct but slow, so a timeout is weaker evidence than a wrong
+answer; timed-out cases are excluded from the cost model rather than entered at
+the timeout value, which would otherwise dominate $\hat{m}$.
+\end{enumerate}
+
+\section{Benchmark Infrastructure}
+\label{sec:benchmark}
+
+ConDefects~\citep{wu2024condefects} collects real faulty submissions from
+AtCoder contests together with the same author's accepted version and the
+contest's own test data: $1{,}254$ Java and $1{,}625$ Python faulty programs.
+It was built to address data leakage in LLM evaluation, since its faults
+post-date the training cut-offs of the models commonly benchmarked on
+Defects4J~\citep{just2014defects4j}. Three of its properties matter here.
+Every test input ships with the output the judge accepted, so a refutation is a
+concrete input/output pair rather than a pass/fail bit --- which is what makes
+a counterexample expressible as a positive requirement. A submission carries no
+problem statement, so every prompt must supply worked examples, identically in
+every condition. And the reference implementation is visible to the oracle only
+and never enters a prompt.

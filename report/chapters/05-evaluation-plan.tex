@@ -1,0 +1,223 @@
+\chapter{Evaluation Plan}
+\label{ch:evaluation}
+
+Nothing in this chapter is a result. Every figure below is a target or a
+protocol; the only measured evidence in this document is
+Section~\ref{sec:pilot}.
+
+\section{Metrics}
+\label{sec:metrics}
+
+The study does not collapse into a single figure of merit, because the two
+halves of the loop spend different resources and a composite would let one pay
+for the other. Metrics are grouped by the resource they account for.
+
+\begin{table}[H]
+\centering
+\caption{Oracle-side metrics (RQ1, RQ2).}
+\label{tab:metrics-oracle}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.19\textwidth} X X@{}}
+\toprule
+Metric & Definition & Success criterion\\
+\midrule
+CPU seconds / episode & \code{getrusage} delta summed over paid probes; paired per cell under common random numbers & \km\ below \code{natural}, \code{fault-record} and \code{coverage}, beyond the cluster bootstrap's interval\\
+\code{test\_calls} / episode & Probe count, reported alongside CPU because the prioritisation literature reports executions & Reported for every arm; \emph{not} a success criterion on its own\\
+CPU per probe & CPU $\div$ probes; isolates ``cheaper'' from ``fewer'' & Diagnostic; the pilot's mechanism claim lives here\\
+Stepwise decomposition & Paired $\Delta$ CPU for each one-variable step of the ablation ladder & At least one step clears the interval\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Proposer-side metrics (RQ3, RQ4).}
+\label{tab:metrics-proposer}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.19\textwidth} X X@{}}
+\toprule
+Metric & Definition & Success criterion\\
+\midrule
+\code{duplicate\_rate} & $1 - \text{distinct}/\text{total}$ patches in an episode. RQ3's primary & Falls against \code{no-mem} (independent repeated sampling)\\
+\code{success@B} & Share of cells repaired within budget $B$ & Rises, or at minimum does not fall, where \code{duplicate\_rate} falls\\
+\code{first\_accept\_round} & Round of first acceptance & Reported paired\\
+Prompt / completion tokens, USD & The proposer's bill, since the repair literature prices in tokens~\citep{hidvegi2024cigar} & Reported for every Block-B arm\\
+Disclosure leakage & Of refuted patches, the share whose refuting set is \emph{disjoint} from what the prompt showed & Falls monotonically as disclosure rises, or RQ4's axis does not exist\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Guaranteed, not measured.} \code{success@B} and
+\code{first\_accept\_round} are identical across every replay arm on every
+cell, by Definition~\ref{def:soundness}. RQ1 is a pure cost claim; a gap there
+is a soundness bug, and the grid asserts it rather than reporting it.
+
+\section{The Arm Roster}
+\label{sec:arms}
+
+Twenty-two arms, in two blocks that differ in what they cost to run.
+
+\paragraph{Block A --- replay arms, zero model calls (13).} Every arm here
+differs only in the probe order, so the patches are drawn once and reused,
+and a new arm costs nothing but CPU: \code{full-suite}, \code{no-mem},
+\code{natural}, \code{random}, \code{fault-record}, \code{cost-only},
+\code{kill-only}, \code{coverage}, \code{km}, \code{km-cs-median},
+\code{km-cs-q75}, \code{km-bucket}, \code{km-explore0}.
+
+\paragraph{Block B --- steered arms, one model-call grid each (9).} For these
+the round-$t$ prompt is a function of the ledger at round $t$, so the draw and
+the schedule are not separable: \code{km+steer}, \code{km+steer-pass},
+\code{km+exclusion}, \code{km+chat}, \code{km+steer-k1}, \code{km+steer-k3},
+\code{km+steer-sample}, \code{km+steer-noreq}, \code{km+steer+vs}.
+
+Two framing points govern how the roster is read, and both are consequences of
+Chapter~\ref{ch:related}.
+
+\begin{itemize}[leftmargin=*]
+\item \textbf{\code{natural} is the incumbent, not a neutral control.} Sorting
+by filename is not a scheduling decision anyone made; it is what any
+implementation gets for free. It is also not arbitrary --- AtCoder's naming
+puts the small, public, highly discriminating cases first --- so it is
+\emph{better} than chance, which is exactly why the pilot's random control is
+cheaper than it. \code{random} is the control.
+\item \textbf{\code{no-mem} is the RQ3 baseline, and it is a strong one.} It
+redraws independently every round under a policy-free nonce, which is precisely
+independent repeated prompting --- the strategy
+\citet{chen2025conversational} measured at $23$ bugs repaired against
+conversational repair's $18$. Block B must beat \code{no-mem}; beating
+\code{natural} proves nothing on the proposer side.
+\end{itemize}
+
+\section{Ablation Ladder}
+\label{sec:ablation}
+
+An ablation chain must change one thing per step or it cannot attribute.
+\code{fault-record} $\to$ \code{km} changes two --- a count becomes a rate,
+\emph{and} the rate is divided by cost --- so the ladder is built to separate
+them.
+
+\begin{table}[H]
+\centering
+\caption{The ablation ladder. One variable per step.}
+\label{tab:ablation}
+\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+Step & What changes & What it would mean if it does not clear the interval\\
+\midrule
+\code{natural} $\to$ \code{cost-only}      & cost enters, no kill info & Cost alone is not a usable signal (pilot: it is not, on its own)\\
+\code{natural} $\to$ \code{kill-only}      & kill rate enters, no cost & The memory term is ornament\\
+\code{natural} $\to$ \code{fault-record}   & the published baseline's step & \frtp\ does not reproduce\\
+\code{fault-record} $\to$ \code{kill-only} & a \textbf{count} becomes a \textbf{rate} & Reading the denominator buys nothing\\
+\code{kill-only} $\to$ \code{km}           & the rate is divided by cost & Cost-awareness is ornament\\
+\code{km} $\to$ \kmc{c}                    & the exponent is tuned & $c$ need not be a parameter (pilot: it does)\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Sensitivity}
+
+Four arms ask whether RQ1's answer survives the project's own design choices,
+and one asks the same of RQ3. They belong in threats to validity, not in the
+question count: \code{km-cs-median} and \code{km-cs-q75} vary the cold-start
+rule for $\hat m$; \code{km-bucket} replaces the continuous score with buckets;
+\code{km-explore0} removes exploration --- and is additionally a
+\emph{precondition} of RQ4, because without exploration a task whose first
+probe refutes everything reaches the prompt with one fact, $k{=}2$ degenerates
+to $k{=}1$, and the $k$ sweep compares $k{=}1$ against itself;
+\code{km+steer+vs} diversifies the \emph{draw} rather than the evidence.
+
+\section{Protocol and Tooling}
+
+\begin{table}[H]
+\centering
+\caption{Tools and their role.}
+\label{tab:tools}
+\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Tool & Role\\
+\midrule
+ConDefects~\citep{wu2024condefects} & Fault corpus, test pools and reference outputs\\
+Python \code{subprocess} + \code{resource} & The sandbox: one program, one input, hard timeout, CPU via \code{getrusage}\\
+OpenAI-compatible endpoint & The proposer; one model per grid, with a cross-run response cache\\
+\code{caster} CLI (ten verbs) & Corpus freeze, phase-1 draw, phase-2 grid walk, full-scan audit, shard merge, analysis, HTML report\\
+Cluster bootstrap + Wilcoxon & Interval estimation over tasks; paired tests over per-task totals\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Grid.} The corpus gate admits every sound fault rather than a
+screened subset, producing on the order of $1{,}244$ faults; banding by pool
+size and contest era happens in analysis, after treatment. Cells are
+$(\text{task} \times \text{seed} \times \text{policy})$, written atomically and
+resumably, with the done-index written after the rows. A merge runs six audits
+before anything is treated as evidence.
+
+\paragraph{Common random numbers.} Round~1 carries no facts, so a steered
+prompt must be byte-identical to an unsteered one and share its cache entry.
+That works only if the draw nonce is \code{task|seed|round} and is
+\emph{not} a function of the policy. Deriving it from the cell key --- which
+does contain the policy --- would kill CRN silently while buying every
+completion once per arm.
+
+\section{Baseline Comparisons}
+
+\begin{table}[H]
+\centering
+\caption{Tier A --- reproduced head-to-head on our corpus.}
+\label{tab:tiera}
+\small
+\begin{tabularx}{\textwidth}{@{}l X l@{}}
+\toprule
+System & Role & Expected outcome\\
+\midrule
+\code{natural} & The incumbent order & \km\ substantially cheaper (pilot: $-76\,\%$)\\
+\frtp~\citep{qi2013frtp} & The published repair-loop prioritiser, ranking on the kill count & \km\ cheaper in CPU, \emph{more expensive} in executions (pilot: $-15.7\,\%$ / $+23.3\,\%$)\\
+$\mathrm{RTP_{add}}$~\citep{rothermel2001prioritizing} & The strongest classical prioritiser & No better than pool order here (pilot: confirmed)\\
+\code{no-mem} & Independent repeated sampling~\citep{chen2025conversational} & The RQ3 baseline Block B must beat\\
+\code{km+chat} & A \textsc{ChatRepair}-style transcript~\citep{xia2024chatrepair} & Higher duplicate rate and faster prompt growth than the requirement contract\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Tier B --- cited qualitatively from the original papers; not
+reproducible within this project's budget.}
+\label{tab:tierb}
+\small
+\begin{tabularx}{\textwidth}{@{}l X X@{}}
+\toprule
+System & Reported result & Relation to this work\\
+\midrule
+APR\,$\times$\,RTS~\citep{lou2024aprregression} & 2.53M patches; selection beats prioritisation in Java & Different setting: no call graph to select on; and they report executions, we report CPU\\
+\textsc{CigaR}~\citep{hidvegi2024cigar} & 127K vs 467K tokens / bug & Complementary currency: they cut the proposer's bill, we cut the oracle's\\
+\textsc{ChatRepair}~\citep{xia2024chatrepair} & 162/337 bugs at \$0.42 each & The conversational incumbent our Block-B contract is measured against\\
+MPP~\citep{venugopal2020mpp} & Modification-point-aware patch killing count & Same missing denominator and missing cost as \frtp\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Threats to Validity}
+
+\paragraph{Construct.} Cost is CPU, not wall clock or money. A deployment that
+pays for wall clock on a loaded machine, or for a managed test service priced
+per invocation, would weight the two units differently --- and the pilot shows
+those weightings disagree. Both are therefore reported for every arm.
+
+\paragraph{Internal.} The ledger learns from the patches the proposer happens
+to produce, so policy and data are coupled within an episode. Common random
+numbers hold round~1 identical across arms, and the full-scan \code{audit} pass
+establishes the kill matrix independently of any arm, so no arm's ordering can
+contaminate the cost table.
+
+\paragraph{External.} One benchmark, one language, one proposer model, and a
+competitive-programming fault distribution with small single-file programs and
+whole-program probes. Transfer to Java projects with method-level suites is not
+claimed; the setting there is the one where
+\citet{lou2024aprregression} find selection to dominate.
+
+\paragraph{Conclusion.} Per-task totals are not independent across seeds, so
+intervals come from a cluster bootstrap over tasks rather than over cells, and
+paired tests run on per-task totals.

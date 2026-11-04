@@ -1,0 +1,203 @@
+\chapter{Related Works}
+\label{ch:related}
+
+Work relevant to this proposal falls into four families: (1)
+generate-and-validate repair and the size of its validation bill, (2)
+regression test-case prioritisation, which is where the scheduling machinery
+comes from, (3) prioritisation specialised to repair loops, which is where the
+direct baseline lives, and (4) LLM-based repair loops and their token
+economics, which is where the proposer-side half of the design belongs. This
+chapter walks the four, consolidates them into one table, and distils the gaps.
+
+\section{Survey of Representative Works}
+\label{sec:survey}
+
+\paragraph{Generate-and-validate repair and the validation bill.}
+\textsc{GenProg}~\citep{legoues2012genprog} established the loop that the rest
+of this literature refines: mutate, validate against the test suite, keep what
+survives. Its systematic study repaired $55$ of $105$ real
+bugs~\citep{legoues2012systematic}, and validation dominates its runtime,
+because each candidate is run against the suite from scratch. The structural weakness of validating against a
+test suite was made precise by \citet{qi2015plausibility}, who re-examined the
+patches reported by three generate-and-validate systems and found that most
+were \emph{plausible} rather than correct --- \textsc{GenProg} produced
+correct patches for $2$ defects out of $18$ for which it produced a plausible
+patch, \textsc{AE} $3$ of $27$, and \textsc{RSRepair} $2$ of $10$. That result
+is the reason this proposal treats the strength of the oracle (how many probes
+a patch must survive) as a parameter to be stated rather than an implementation
+detail, and the reason the soundness invariant of
+Section~\ref{sec:soundness} is asserted on every cell.
+Defects4J~\citep{just2014defects4j} supplied the benchmark the family
+standardised on; ConDefects~\citep{wu2024condefects} supplies the one used
+here, for the data-leakage reason given in Section~\ref{sec:scope}.
+
+\paragraph{Regression test-case prioritisation.}
+\citet{rothermel2001prioritizing} defined the problem and the two greedy
+families that still dominate it: \emph{total} strategies, which rank a test by
+how much it covers, and \emph{additional} strategies, which rank by how much it
+covers that nothing scheduled so far has covered. The
+survey of \citet{lou2019survey} organises two decades of refinements of those
+two. Crucially for this proposal, \citet{elbaum2001cost} observed early that
+the field's standard metric assumed uniform test costs and uniform fault
+severities, and proposed a cost-cognizant replacement. That paper is the
+philosophical ancestor of the $\hat{m}$ term here; what it did not have, and
+what this work adds, is an \emph{online} cost estimate learned inside the loop
+rather than a cost supplied in advance.
+
+\paragraph{Prioritisation inside a repair loop.}
+\citet{qi2013frtp} introduced fault-recorded testing prioritisation (\frtp),
+implemented as \textsc{TrpAutoRepair}, and evaluated it against
+\textsc{GenProg} on five subject programs with sixteen real bugs: it matched or
+beat \textsc{GenProg}'s success rate and improved repair efficiency in fifteen
+of the sixteen. \frtp\ ranks a test case by its \emph{failing count} --- the
+number of validated patches the case has already falsified --- and gathers that
+information from the repair process itself rather than from a separate
+profiling pass. It is the published baseline for this work, and the arm named
+\code{fault-record} in Chapter~\ref{ch:evaluation} implements exactly that
+ranking, not a weakened variant. \citet{venugopal2020mpp} extend the idea with
+modification-point awareness, maintaining a table whose entries are the
+``patch killing count'' of a test case against a program variant, which is the
+same quantity under another name.
+
+The most thorough measurement of patch-validation cost is
+\citet{lou2024aprregression}, who study $2{,}532{,}915$ patches produced by
+twelve APR systems on Defects4J. Two of their findings bear directly on this
+proposal. First, they report results in test executions rather than seconds,
+stating that executions are ``more stable and more suitable for future work to
+reproduce''. Second, they find that \emph{selection} dominates
+\emph{prioritisation} in their setting: class-level regression test selection
+alone reduces executions by about $37\,\%$ for \textsc{PraPR}, where the best
+prioritisation approach reduces them by only about $15\,\%$. Both findings are
+properties of their setting rather than of the problem, and
+Section~\ref{sec:gap} explains why neither transfers to the one studied here.
+
+\paragraph{LLM repair loops and their token economics.}
+\textsc{ChatRepair}~\citep{xia2024chatrepair} made the conversational loop
+standard, repairing $162$ of $337$ Defects4J bugs at roughly \$0.42 each by
+feeding failing-test feedback back into the conversation.
+\textsc{CigaR}~\citep{hidvegi2024cigar} attacked its cost directly and reports
+$127$K tokens per bug against a reimplemented \textsc{ChatRepair} baseline's
+$467$K, a $73\,\%$ reduction, while producing correct patches for $171$ of
+$429$ bugs. The sharpest result in the family is negative:
+\citet{chen2025conversational} hold the budget fixed at $24$ model calls per
+bug and find that \emph{independent repeated prompting} repairs $23$ bugs where
+\textsc{ChatRepair} repairs $18$, and that $65\,\%$ of \textsc{ChatRepair}'s
+generated patches are duplicates. The obvious iterative strategy is therefore
+already published as worse than simply drawing again, which fixes the baseline
+any steering arm in this project must beat.
+
+\paragraph{The immediate predecessor.}
+\cegmem\ --- the author's previous study, described in detail in
+Section~\ref{sec:cegmem-premise} --- sits between the two halves. It keyed a
+memory of refuted patches by a failure type $\theta = (\text{edit location})
+\times (\text{violated property})$ and used it both to block redundant
+candidates before the oracle ran and to steer the proposer away from exhausted
+classes. On $309$ ConDefects tasks it cut oracle calls per episode by
+$7.07\times$ and raised the repair rate from $0.526$ to $0.581$. It is cited
+here as the premise of this proposal rather than as a competitor.
+
+\section{Comparison Table}
+\label{sec:comparison}
+
+Table~\ref{tab:related} consolidates the surveyed systems against the four
+design dimensions this proposal cares about: \textbf{M1} what the memory is
+keyed by, \textbf{M2} what quantity is ranked, \textbf{M3} whether the cost of
+a probe enters that quantity, and \textbf{M4} whether the evidence is returned
+to the proposer.
+
+\begin{table}[H]
+\centering
+\caption{Representative works against the four dimensions. ``---'' means the
+dimension is absent from the system.}
+\label{tab:related}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabularx}{\textwidth}{@{}r l l l l c c X@{}}
+\toprule
+\# & System & Yr & M1 key & M2 ranked quantity & M3 & M4 & Headline result\\
+\midrule
+1 & \textsc{GenProg}~\citep{legoues2012genprog,legoues2012systematic} & 2012 & ---  & --- (suite order)      &    &    & 55/105 bugs at \$8 each\\
+2 & \frtp~\citep{qi2013frtp}                           & 2013 & failure class  & kill \emph{count}      &    &    & Faster than GenProg on 15/16\\
+3 & Cost-cognizant TCP~\citep{elbaum2001cost}          & 2001 & ---            & coverage / cost        & \checkmark &  & $\mathrm{APFD}_c$ metric\\
+4 & Additional greedy~\citep{rothermel2001prioritizing}& 2001 & ---            & marginal coverage      &    &    & The $\mathrm{RTP_{add}}$ family\\
+5 & MPP~\citep{venugopal2020mpp}                       & 2020 & modif.\ point  & patch killing count    &    &    & Faster patch validation\\
+6 & APR\,$\times$\,RTS~\citep{lou2024aprregression}    & 2024 & ---            & selection + priority   &    &    & 2.53M patches; sel.\ $>$ prior.\\
+7 & \textsc{ChatRepair}~\citep{xia2024chatrepair}      & 2024 & transcript     & --- (suite order)      &    & \checkmark & 162/337 at \$0.42/bug\\
+8 & \textsc{CigaR}~\citep{hidvegi2024cigar}            & 2024 & transcript     & --- (suite order)      &    & \checkmark & 127K vs 467K tokens/bug\\
+9 & Repeated sampling~\citep{chen2025conversational}   & 2025 & none           & ---                    &    &    & 23 vs 18 bugs; 65\% dupes\\
+10& \cegmem\ (premise)                                 & 2026 & failure class  & --- (pool order)       &    & \checkmark & $7.07\times$ fewer oracle calls\\
+\midrule
+-- & \textbf{\caster\ (this work)}                     & 2026 & \textbf{test case} & \textbf{rate / cost} & \checkmark & \checkmark & See Sec.~\ref{sec:pilot}\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Research Gap}
+\label{sec:gap}
+
+Three gaps follow from the table, and the third is the one the pilot measures.
+
+\paragraph{Gap 1 --- the memory is keyed by a class, so it cannot schedule.}
+Every memory in rows 2, 5, 7, 8 and 10 is indexed by something that is not a
+test case: a failure class, a modification point, or a conversation transcript.
+Such an index answers ``has this kind of patch been refuted before?''. It
+cannot answer ``which probe should run first?'', because the probe is not the
+thing being indexed. \cegmem\ is the clean demonstration: its class index
+removed $86\,\%$ of oracle calls and still left every surviving call walking
+the pool in alphabetical order. Re-keying by test case is what makes one record
+serve the scheduler and the prompt at once.
+
+\paragraph{Gap 2 --- the ranked quantity discards the evidence of \emph{not}
+killing.} \frtp\ and its descendants rank on a count of kills. A count cannot
+distinguish a case that has failed to refute ten patches from a case that has
+never been run, because both have count zero, and the distinction is exactly
+what tells you whether to keep paying for the case. A \emph{rate} --- kills
+over attempts --- is the first quantity that reads the denominator, and the
+first that can decay a case whose early record was luck.
+
+\paragraph{Gap 3 --- the cost of a probe is not in the score, and on
+heterogeneous pools that is the term that matters.} Only
+\citet{elbaum2001cost} put cost in the score at all, and they assume it is
+known in advance rather than learned online. This gap is usually invisible
+because of the unit of account: \citet{lou2024aprregression} measure
+executions, for the reproducibility reason quoted above, and under that unit a
+cheap probe and an expensive one are the same event. The measured cost
+distribution of Section~\ref{sec:pilot-arena} shows what that hides here: a
+$58.7\times$ spread between the median and the 99th percentile, \emph{inside}
+the same pool. The pilot's headline (Section~\ref{sec:pilot-measured}) is that
+the two units disagree in sign --- \km\ pays $23.3\,\%$ more executions than
+\frtp\ for $15.7\,\%$ less CPU --- so a study that reports executions alone
+would conclude \frtp\ wins.
+
+Two properties of the setting are worth stating, because they explain why
+\citeauthor{lou2024aprregression}'s ``selection beats prioritisation'' finding
+does not transfer. First, their subjects are Java programs with method-level
+test suites, where regression test selection can skip a test because no changed
+method reaches it. Here a probe is a \emph{whole-program execution on one
+input}: there is no call graph to cut and nothing to select away, so
+prioritisation is the only lever available. Second, their cost unit is uniform
+by construction; here it is not.
+
+\section{Direct Competitors}
+\label{sec:competitors}
+
+\begin{table}[H]
+\centering
+\caption{Direct competitors and the differentiator in each case.}
+\label{tab:competitors}
+\small
+\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}p{0.17\textwidth} X X@{}}
+\toprule
+Rank & Competitor & Similarity & Our differentiator\\
+\midrule
+\#1 & \frtp~\citep{qi2013frtp} & Same place in the loop; a memory that reorders probes & A rate over attempts, not a count of kills; and divided by a measured cost. Pilot: $-15.7\,\%$ CPU against it\\
+\#2 & \cegmem\ (premise) & Same corpus, same oracle, same proposer & Keyed by test case, not failure class; schedules the probe rather than blocking the patch\\
+\#3 & MPP~\citep{venugopal2020mpp} & ``Patch killing count'' table & Same gap as \frtp: a count, no denominator, no cost\\
+\#4 & Cost-cognizant TCP~\citep{elbaum2001cost} & Cost appears in the score & Cost is \emph{learned online} from \code{getrusage} inside the loop, not supplied in advance\\
+\#5 & Additional greedy~\citep{rothermel2001prioritizing} & A scheduling policy over the same pool & Measured here as an arm (Sec.~\ref{sec:pilot-replay}) and found no better than pool order on this corpus\\
+\#6 & APR\,$\times$\,RTS~\citep{lou2024aprregression} & Patch-validation cost, at scale & Selection is unavailable in this setting; and we report CPU, where they report executions\\
+\#7 & \textsc{CigaR}~\citep{hidvegi2024cigar} & Explicit cost-efficiency goal & Their currency is tokens, ours is oracle CPU; the two are complementary halves of the same bill\\
+\#8 & Repeated sampling~\citep{chen2025conversational} & The strong baseline on the proposer side & It is our RQ3 baseline, not our competitor on RQ1; scheduling is orthogonal to how the draw is made\\
+\bottomrule
+\end{tabularx}
+\end{table}

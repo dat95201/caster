@@ -90,10 +90,20 @@ class Cell:
     distinct_patches: int
     patches: int
     model: str
+    prompt_tokens: int
+    completion_tokens: int
+    usd: float
 
     @property
     def duplicate_rate(self) -> float:
-        """RQ7's measurable-today half. Needs no new arm and no model calls."""
+        """RQ3's PRIMARY metric: the share of draws that were already drawn.
+
+        It was parked under the verbalized-sampling arm as "measurable today".
+        It is not a by-product — renormalising the patch family IS half the
+        study, and this is the quantity that says whether the family moved.
+        Chen et al. (arXiv 2503.15050) measure 65% duplicates in ChatRepair's
+        generated patches, which is the number this one is read against.
+        """
         if self.patches == 0:
             return 0.0
         return 1.0 - self.distinct_patches / self.patches
@@ -137,6 +147,12 @@ def cells(rows: Iterable[RoundRecord], *, budget: int | None = None) -> list[Cel
             k_facts_mean=(sum(k_vals) / len(k_vals)) if k_vals else 0.0,
             distinct_patches=len(set(shas)), patches=len(shas),
             model=str((kept[0].cell or {}).get("model", "")),
+            # The model half of the bill. Every LLM-repair baseline is priced
+            # in tokens (CigaR: 127K/bug against 467K) and a CPU-only table
+            # answers the cheaper half of the question.
+            prompt_tokens=sum(r.prompt_tokens or 0 for r in kept),
+            completion_tokens=sum(r.completion_tokens or 0 for r in kept),
+            usd=sum(r.usd or 0.0 for r in kept),
         ))
     return out
 
@@ -400,7 +416,12 @@ def arms_by_pool_band(cs: Sequence[Cell],
 
 
 def arm_table(cs: Sequence[Cell]) -> list[dict[str, Any]]:
-    """RQ1's primary metric: CPU seconds per episode, plus the usual companions."""
+    """RQ1's primary metric: CPU seconds per episode, plus the usual companions.
+
+    Tokens and USD are here and not in a separate table on purpose: the oracle
+    and the model are two halves of one bill, and a reader who sees only one of
+    them cannot tell whether a cheaper schedule was bought with more rounds.
+    """
     agg: dict[str, list[Cell]] = {}
     for c in cs:
         agg.setdefault(c.policy, []).append(c)
@@ -420,6 +441,12 @@ def arm_table(cs: Sequence[Cell]) -> list[dict[str, Any]]:
             "success_at_b": round(sum(c.accepted for c in group) / len(group), 4),
             "first_accept_mean": round(statistics.fmean(first), 3) if first else None,
             "duplicate_rate": round(statistics.fmean([c.duplicate_rate for c in group]), 4),
+            "prompt_tokens_mean": round(statistics.fmean(
+                [c.prompt_tokens for c in group]), 1),
+            "completion_tokens_mean": round(statistics.fmean(
+                [c.completion_tokens for c in group]), 1),
+            "usd_mean": round(statistics.fmean([c.usd for c in group]), 6),
+            "usd_total": round(sum(c.usd for c in group), 4),
         })
     return rows
 
@@ -556,6 +583,87 @@ def km_survival(cs: Sequence[Cell], policy: str, budget: int) -> list[float]:
         hit = sum(1 for c in group
                   if c.first_accept_round is not None and c.first_accept_round <= b)
         out.append(hit / len(group))
+    return out
+
+
+# ── RQ4: what the prompt showed against what actually refuted ────────────────
+
+#: A verdict that is not `pass` refuted the patch. `timeout` counts: the patch
+#: did not produce the required output within the protocol's clock, which is a
+#: refutation under this oracle and is what the loop acted on.
+REFUTING = ("wrong", "crash", "timeout")
+
+
+def exploitability(
+    rows: Sequence[RoundRecord],
+    matrices: dict[str, dict[str, dict[str, str]]],
+) -> list[dict[str, Any]]:
+    """RQ4's primary metric. **No holdout required.**
+
+    `facts_shown` records, per round, the probes the prompt disclosed — captured
+    before the scan runs, so it is what the model actually saw. `caster audit`
+    records the full kill vector per (patch, probe). Put them side by side and
+    the disclosure axis becomes measurable without holding anything back,
+    because the question is not "does this patch generalise" but "is what
+    refuted it inside what we told it".
+
+    Two shares, and they are NOT complements — a patch refuted both by a shown
+    probe and an unshown one is in neither:
+
+    `fits_disclosed`
+        the refuting set is DISJOINT from what was shown. The patch satisfied
+        everything it was told and died somewhere else. This is the
+        exploitation signature, and the one RQ4 rises or falls on.
+
+    `only_disclosed`
+        the refuting set is a SUBSET of what was shown. The patch failed on
+        exactly the thing it was handed, so the undisclosed remainder added no
+        signal for it. Reported beside the first because it bounds how much the
+        measurement could have seen: if it is large, the pool outside the
+        disclosure is not discriminating and `fits_disclosed` is measured
+        against a thin margin.
+
+    Patches that nothing refutes are excluded from both denominators: a
+    plausible patch is evidence about repair, not about disclosure. Rounds
+    with no disclosure (every unsteered arm) are skipped rather than counted as
+    zero, which would dilute every steered arm it is tabulated against.
+
+    The holdout answers a DIFFERENT question — whether an *accepted* patch
+    generalises past the pool that accepted it — and nothing here substitutes
+    for it (DECISIONS 23).
+    """
+    agg: dict[str, dict[str, int]] = {}
+    for r in rows:
+        if not r.facts_shown or not r.patch_sha:
+            continue
+        verdicts = matrices.get(r.task, {}).get(r.patch_sha)
+        if not verdicts:
+            continue                      # the audit never measured this patch
+        refuters = {probe for probe, v in verdicts.items() if v in REFUTING}
+        if not refuters:
+            continue                      # plausible: says nothing about disclosure
+        shown = set(r.facts_shown)
+        bucket = agg.setdefault(r.policy, {"refuted": 0, "fits": 0, "only": 0,
+                                           "k_sum": 0})
+        bucket["refuted"] += 1
+        bucket["k_sum"] += len(shown)
+        if not (refuters & shown):
+            bucket["fits"] += 1
+        if refuters <= shown:
+            bucket["only"] += 1
+
+    out = []
+    for policy, b in sorted(agg.items()):
+        n = b["refuted"]
+        out.append({
+            "policy": policy,
+            "refuted_patches": n,
+            "k_shown_mean": round(b["k_sum"] / n, 3),
+            "fits_disclosed": b["fits"],
+            "fits_disclosed_pct": round(100 * b["fits"] / n, 2),
+            "only_disclosed": b["only"],
+            "only_disclosed_pct": round(100 * b["only"] / n, 2),
+        })
     return out
 
 

@@ -496,8 +496,13 @@ def test_a_nondeterministic_reference_is_caught(corpus_root, tmp_path):
 
     root = tmp_path / "flaky"
     code = root / "Code" / "abc009_a" / "Python" / "9001"
+    # randint(0, 1) made this test itself a coin flip: a case escapes both
+    # checks when BOTH reference runs happen to add 0 (p = 1/4), and with
+    # min_loop_pool=2 the task is admitted as soon as two of the eight escape
+    # — P(X>=2), X~Bin(8, 1/4) = 63%. The fixture has to be reliably
+    # nondeterministic, not occasionally so.
     _write(code / "correctVersion.py",
-           "import random\nn=int(input())\nprint(n*2 + random.randint(0, 1))\n")
+           "import random\nn=int(input())\nprint(n*2 + random.randint(1, 10**6))\n")
     _write(code / "faultyVersion.py", "n=int(input())\nprint(n*3)\n")
     test = root / "Test" / "abc009" / "A"
     for i in range(8):

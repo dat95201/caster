@@ -1,0 +1,53 @@
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+\markboth{Abstract}{Abstract}
+
+A large-language-model program-repair loop alternates between a proposer, which
+draws a candidate patch, and an oracle, which refutes it by finding a test case
+on which the patch is wrong. The proposer is the half that gets the attention
+and the oracle is the half that costs. On the corpus studied here the oracle's
+own reference program takes a median of 0.076\,s of CPU per test
+case but a 99th percentile of 4.48\,s --- a spread of
+$58.7\times$ inside the same pool --- and a loop that walks that pool in the
+order the benchmark ships spends 2.18\,s of CPU per round, on every
+round, for twenty rounds.
+
+Existing memories for repair loops do not touch that cost. They are keyed by a
+failure \emph{class}: fault-recorded testing prioritisation ranks a case by how
+many patches it has already falsified, and the predecessor of this work,
+\cegmem, stored each refuted patch under a type formed from its edit location
+and the property it violated. A class-keyed memory can say which patches not to
+try again --- \cegmem\ cut oracle calls per episode from $11.11$ to $1.57$,
+a factor of $7.07$ --- but it cannot say which test to run first, and it cannot
+say which test is cheap.
+
+This proposal develops \caster, a repair loop whose memory is keyed by
+\textbf{test case} rather than by failure class. Each case carries an online
+Beta-posterior kill rate $K$ and an online mean CPU cost $\hat{m}$, and probes
+are scheduled by the index \km: refute early, and refute cheaply. Keying on the
+case is also what makes the second half possible, because a case is an
+\emph{observation} and only an observation can be phrased to the proposer as a
+positive requirement rather than a prohibition.
+
+\paragraph{What this document reports as evidence.} The preliminary validation
+is a pilot on the frozen data of the \cegmem\ study: $68$ ConDefects tasks,
+$2{,}523$ test cases and $4{,}670$ stored patches for which a complete
+patch~$\times$~case verdict matrix, a measured per-case reference CPU cost, and
+a per-case coverage trace all exist. Two experiments run on it. A replay
+simulation reproduces an arbitrary probe order exactly from the verdict matrix;
+a second study re-executes the loop for real over $6{,}800$ rounds per policy
+and measures CPU with \code{getrusage}. The measured result is that \km\ costs
+\textbf{76.2\,\%} less oracle CPU than the shipped pool order
+(95\,\% CI $[-84.9, -61.2]$, $p = 1.7\times10^{-11}$, cheaper on $63$ of $68$
+tasks) and \textbf{15.7\,\%} less than the published
+fault-recorded baseline (95\,\% CI $[-28.9, -5.1]$, $p = 0.011$, $42$ of $68$)
+--- while paying 23.3\,\% \emph{more} probes than that baseline.
+Executions and CPU therefore disagree in sign on this corpus, which matters
+because the test-prioritisation literature deliberately reports executions.
+
+\paragraph{What it does not report.} The \caster\ implementation itself has
+been built and unit-tested but its experimental grid has not been run. The
+twenty-two arms, the steered prompt contract that the test-case key is supposed
+to enable, the duplicate-rate and token-cost measurements, and the full
+fault corpus are Phase~2 work and are stated as such throughout. No number in
+Chapter~\ref{ch:evaluation} is a result; every number there is a target.

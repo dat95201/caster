@@ -15,8 +15,11 @@ only an observation can be phrased as a positive requirement — "produce exactl
 this output on this input" rather than "do not do that again". So the scheduler
 and the prompt contract ship as one system.
 
-How to actually run it — setup, the pipeline stage by stage, sharding across
-machines, and what to do when something fails — is in
+The four questions the study asks, each with the outcome that would refute it
+and the arms that answer it, are in **[`docs/QUESTIONS.md`](docs/QUESTIONS.md)**
+— and `tests/test_questions.py` fails the build if an arm names a question that
+file does not declare. How to actually run it — setup, the pipeline stage by
+stage, sharding across machines, and what to do when something fails — is in
 **[`docs/RUNNING.md`](docs/RUNNING.md)**. The design decisions, with the reason
 for each, are in **[`docs/DECISIONS.md`](docs/DECISIONS.md)**.
 
@@ -194,7 +197,7 @@ likely to go first:
 pytest -q
 ```
 
-`pytest` runs **CASTER's own unit tests** — not the experiment. 257 of them,
+`pytest` runs **CASTER's own unit tests** — not the experiment. 263 of them,
 seconds, no network and no model. They are unrelated to the ~1,244-fault corpus
 that `caster freeze` produces and `caster evaluate` walks.
 

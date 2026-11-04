@@ -1,0 +1,33 @@
+\chapter*{Acknowledgements}
+\addcontentsline{toc}{chapter}{Acknowledgements}
+\markboth{Acknowledgements}{Acknowledgements}
+
+I would like to thank the lecturers of the Faculty of Computer Science and
+Engineering, Ho Chi Minh City University of Technology (HCMUT), for the
+foundational and specialised teaching that made this work possible.
+
+I am especially grateful to my instructor, \InstructorName, for the guidance
+that shaped the scope of this proposal. Two pieces of that guidance did most of
+the work. The first was the insistence that a research question be stated
+together with the outcome that would \emph{refute} it; applying that test
+removed three questions from an earlier roster that turned out to be names for
+groups of experiments rather than questions. The second was the instruction to
+measure the resource the system actually spends rather than the one the
+literature happens to report, which is the reason the preliminary study in
+Chapter~\ref{ch:framework} reports CPU seconds and test executions side by
+side, and the reason it found that the two disagree in sign.
+
+This proposal also stands on a previous study of my own, \cegmem, in which a
+counterexample-guided repair loop stored every refuted patch under a failure
+type keyed by its edit location. That study answered its question and, in
+answering it, exposed the one this proposal is about: a memory that knows
+\emph{which patches not to try again} still says nothing about \emph{which test
+to run first}. I thank my colleagues for the discussions that made that
+distinction sharp enough to build on.
+
+This document reports work in progress. The preliminary validation in
+Section~\ref{sec:pilot} is a replay and re-execution study on the frozen data
+of the earlier project; the full grid on the \caster\ implementation --- the
+twenty-two arms, the steered prompt contract, and the complete fault corpus ---
+has not been run, and is stated as Phase~2 work. Any remaining errors are my
+own.

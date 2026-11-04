@@ -51,12 +51,19 @@ def test_every_arm_in_the_spec_exists():
     assert {a.arm_id for a in policies.BLOCK_B} == block_b
 
 
-def test_the_default_grid_excludes_chat_and_full_suite():
-    """"keep the template able to render it; do not put it in the default
-    grid". `full-suite` is excluded because `caster audit` already produces it."""
-    assert "km+chat" not in policies.DEFAULT_GRID
+def test_the_default_grid_excludes_only_full_suite():
+    """`full-suite` is excluded because `caster audit` already produces it.
+
+    `km+chat` used to be excluded too, for being measured bad here (0.50
+    budgeted success against no-memory's 0.63). That was backwards: it is the
+    ChatRepair-style comparator RQ3 is argued against, and "the published
+    comparator loses to redrawing" is the finding, not a reason to stop
+    running it. Chen et al. (arXiv 2503.15050) report the same direction
+    independently, so the arm carries a replication.
+    """
     assert "full-suite" not in policies.DEFAULT_GRID
-    assert "km" in policies.DEFAULT_GRID and "natural" in policies.DEFAULT_GRID
+    assert "km+chat" in policies.DEFAULT_GRID
+    assert set(policies.DEFAULT_GRID) | {"full-suite"} == set(policies.ARMS)
 
 
 @pytest.mark.parametrize("arm_id", sorted(policies.ARMS))
