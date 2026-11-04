@@ -38,7 +38,6 @@ from caster.exec.store import (
     OUTPUT_HEAD_CHARS,
     REPEATS_BEFORE_HALT,
     CacheMiss,
-    VerdictDivergence,
     VerdictStore,
 )
 
@@ -104,13 +103,16 @@ def _measure(
 ) -> tuple[ProbeVerdict, int, int]:
     """Execute one probe. Returns (verdict, executions, timeout re-executions).
 
-    Timeouts are quarantined. A fresh `timeout` that disagrees
-    with a stored non-timeout verdict (or vice versa) is re-run: a **stable**
-    disagreement across `REPEATS_BEFORE_HALT` runs on one host is the halt
-    condition and raises `VerdictDivergence`; a flip is jitter, logged to
-    `jitter.jsonl`, counted in the threats table, and the conclusive verdict
-    wins. In the common case — no stored entry, or agreement — this is exactly
-    one execution.
+    Timeouts are quarantined. A fresh `timeout` that disagrees with a stored
+    non-timeout verdict (or vice versa) is re-run up to `REPEATS_BEFORE_HALT`
+    times on one host. **No outcome of that loop halts the run** (DECISIONS 27):
+    the conclusive -- non-timeout -- verdict wins, the flip goes to
+    `jitter.jsonl` carrying whether it was `stable`, and the threats table
+    reports both rates. A disagreement where NEITHER side is a timeout is a
+    different thing and still halts unconditionally, in `store.put`.
+
+    In the common case -- no stored entry, or agreement -- this is exactly one
+    execution.
     """
     verdict = adapter.run(task_name, probe, patch)
     runs = verdict.runs
@@ -137,16 +139,23 @@ def _measure(
             # It reproduced the stored verdict after all — pure jitter.
             store.note_timeout_flip(_sha(patch), probe, seen)
             return again, runs, reruns
-    if all(s == seen[0] for s in seen):
-        raise VerdictDivergence(
-            f"(patch {_sha(patch)[:12]}, probe {probe}, protocol "
-            f"{store.protocol_sha}) was {stored.verdict!r} on host "
-            f"{stored.host!r} and is {seen[0]!r} on {store.host!r}, stably "
-            f"across {len(seen)} runs. A wall-clock timeout can flip; a stable "
-            f"disagreement cannot, so this is an incomplete protocol hash or a "
-            f"nondeterministic program. Nothing was overwritten."
-        )
-    store.note_timeout_flip(_sha(patch), probe, seen)
+    # Every repeat disagreed with the store, and one side is a `timeout`.
+    # This does NOT halt the run (DECISIONS 2 and 27). A stored `timeout` is
+    # not evidence -- `store.get()` never serves it and `--replay-only` cannot
+    # be satisfied by it -- so it must not be the thing that stops a grid.
+    #
+    # The condition that used to raise here fired when the repeats agreed with
+    # each other, reading "stable" as "not jitter, therefore a protocol gap".
+    # The repeats run back to back, so under sustained load they sample ONE
+    # machine state: on a contended box "stable" measures the load, not the
+    # protocol. That is exactly the flip rate at the grid's target concurrency
+    # that DECISIONS 2 left open, so it is RECORDED rather than raised --
+    # `jitter.jsonl` carries `stable`, and the threats table reports the rate.
+    #
+    # A disagreement where NEITHER side is a timeout still halts
+    # unconditionally: that path returns above, and `store.put` raises.
+    store.note_timeout_flip(_sha(patch), probe, seen,
+                            stable=all(s == seen[0] for s in seen))
     return conclusive or verdict, runs, reruns
 
 

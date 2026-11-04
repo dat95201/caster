@@ -391,18 +391,28 @@ class VerdictStore:
             self._flush(sha)
 
     def note_timeout_flip(self, patch_sha: str, case_name: str,
-                          verdicts: list[str], host: str | None = None) -> None:
+                          verdicts: list[str], host: str | None = None,
+                          *, stable: bool = False) -> None:
         """A `timeout` key that did not reproduce. Logged, counted, not fatal.
 
-        the threats table is built from this file. The run continues, because
+        The threats table is built from this file. The run continues, because
         the measured base rate is 0.09% and halting on it would stop the grid
         for a known property of a wall-clock budget.
+
+        `stable` marks the case where EVERY repeat disagreed with the store.
+        It used to halt the run. It no longer does (DECISIONS 27): the repeats
+        are back to back and therefore sample one machine state, so on a loaded
+        box "stable" is a statement about the load and not about the protocol.
+        Keeping the two apart in this file is what turns the halt into the
+        measurement DECISIONS 2 asked for -- the flip rate at the grid's own
+        target concurrency, which is the number that was missing.
         """
         paths.ensure(paths.DATA_DIR)
         line = json.dumps({
             "patch_sha": patch_sha, "case": case_name,
             "protocol_sha": self.protocol_sha,
             "verdicts": verdicts, "host": host or self.host, "at": time.time(),
+            "stable": bool(stable),
         })
         with (paths.DATA_DIR / "jitter.jsonl").open("a", encoding="utf-8") as f:
             f.write(line + "\n")

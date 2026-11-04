@@ -136,6 +136,29 @@ def test_a_timeout_verdict_is_stored_but_never_served(run_dir):
     vs.put("sha", "case", verdict="wrong", output_sha256="b", cpu_s=0.2)
 
 
+def test_a_stable_timeout_flip_is_recorded_and_does_not_halt(run_dir):
+    """DECISIONS 27. The repeats in `_measure` run back to back, so a `stable`
+    disagreement is a statement about machine load, not about the protocol. It
+    is written to jitter.jsonl with `stable: true` and the run continues."""
+    import json
+
+    from caster import paths
+    from caster.exec.store import VerdictStore
+
+    vs = VerdictStore({"p": 1})
+    vs.put("sha", "case", verdict="timeout", output_sha256="", cpu_s=9.9)
+    # every repeat disagreed with the store -- the old halt condition
+    vs.note_timeout_flip("sha", "case", ["pass", "pass", "pass"], stable=True)
+
+    rows = [json.loads(l) for l in
+            (paths.DATA_DIR / "jitter.jsonl").read_text().splitlines() if l.strip()]
+    assert rows[-1]["stable"] is True
+    assert rows[-1]["verdicts"] == ["pass", "pass", "pass"]
+    # and the conclusive verdict may overwrite the quarantined timeout
+    vs.put("sha", "case", verdict="pass", output_sha256="b", cpu_s=0.2)
+    assert vs.peek("sha", "case").verdict == "pass"
+
+
 def test_an_arm_scan_never_overwrites_an_audited_cost(run_dir):
     """The first arm to touch a (patch, probe) would otherwise write the
     cost every later arm inherits."""

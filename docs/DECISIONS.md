@@ -656,3 +656,52 @@ would refuse to join the old shard's `key_version: 3` against the new one.
 The rule to apply next time, in this order: grep the runs for the arm's name
 first; if rows exist, their meaning changed and the version MUST move; if none
 do, the arm has no history to protect and the version MUST NOT move.
+
+## 27. A timeout flip is measured, never halted on
+
+`caster/exec/verify.py::_measure`. Amends DECISIONS 2.
+
+DECISIONS 2 set out to keep a wall-clock flake from stopping a grid, and then
+kept one halt: a disagreement that was **stable** across `REPEATS_BEFORE_HALT`
+re-runs raised `VerdictDivergence`. The reading was that stability separates
+jitter from a real protocol gap.
+
+It does not, and the run that found this out is the one DECISIONS 2 asked for.
+The repeats execute **back to back**, so they sample one machine state. Under
+sustained load -- two shards and a local model server competing for the same
+cores -- a program sitting near the clock times out while loaded and passes
+while not, and three consecutive re-runs in a quiet window all agree. "Stable
+across 3 runs on one host" then measures the load, not the protocol, and the
+grid halts on exactly the property DECISIONS 2 decided not to halt on.
+
+Observed: `(patch 0ad7c8a537a5, probe 003.txt, protocol 2dcd47fd0d412f4b)` was
+`timeout`, came back `pass` three times, and killed the shard that owned it
+while the other shard ran on.
+
+So the halt goes. A stored `timeout` is **not evidence** -- `store.get()` never
+returns one, `--replay-only` cannot be satisfied by one -- and a record that can
+never be served has no business stopping a run. `store.put` had this right
+already: it raises only when *neither* side is a timeout, and its own test
+(`test_a_timeout_verdict_is_stored_but_never_served`) asserts that a timeout
+disagreement does not halt. `_measure` was the layer that disagreed with it.
+
+* the conclusive (non-timeout) verdict wins and overwrites the stale entry;
+* `jitter.jsonl` gains `stable`, so the two rates are separable;
+* `analyse` reports both beside the CPU figures, which **is** the open
+  measurement of DECISIONS 2 -- the flip rate at the grid's target concurrency;
+* a disagreement where neither side is a timeout still halts unconditionally.
+
+**What this costs.** A genuinely incomplete `protocol_sha` now surfaces as a
+rising stable-flip rate in the threats table instead of a hard stop on the first
+instance. That is the right trade at a run level -- a rate is more informative
+than one example -- but it has to be *read*, which is the same obligation
+DECISIONS 25 leaves on `exceeds_sandbox_timeout`. A merge-time audit that fails
+when the stable-flip rate crosses a threshold is the natural follow-up and is
+not implemented here.
+
+**Not done, deliberately:** making the timeout CPU-based (`RLIMIT_CPU`) would
+remove the load dependence at the source, but it changes the instrument, so
+`protocol_sha` moves and gate G2's admitted pool has to be re-derived -- the
+corpus-scale cost DECISIONS 2 and 25 both declined. The per-fault clock of
+DECISIONS 25, `max(SANDBOX_TIMEOUT_SEC, k * reference_cpu_s)`, remains the
+better fix and is still owed.

@@ -34,9 +34,11 @@ timeout value, the recursion ceiling and the normalisation rules, but it cannot
 cover machine speed or concurrent load, which are the actual inputs, and the
 measured base rate of disagreement is small but not zero. Rather than halt a
 grid on it, a `timeout` verdict is never reused from the store
-(`caster.exec.store`) and never serves a replay-only scan; it is re-executed, a
-stable disagreement across repeats on one host halts the run, and a flip is
-logged to `jitter.jsonl` and counted in the threats table. The alternative — a
+(`caster.exec.store`) and never serves a replay-only scan; it is re-executed,
+the conclusive verdict wins, and the flip is logged to `jitter.jsonl` with a
+`stable` marker and counted in the threats table. A timeout flip never halts
+the run -- it is a measurement of the clock under load, not of the protocol
+(DECISIONS 27). The alternative — a
 deterministic step cap — would make the verdict pure, but it is not the
 instrument the benchmark's own judge used, so the admitted pool (gate G2) would
 have to be re-derived under it.
