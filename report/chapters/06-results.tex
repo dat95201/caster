@@ -1,0 +1,420 @@
+\chapter{Results}
+\label{ch:results}
+
+\pendnote{The $100$-task pilot is running at the time of writing. Every table
+and figure in this chapter is laid out with its final shape, its units and its
+reading, and every measured value is marked \pend. Nothing in this chapter is
+to be read as a result until the marks are replaced.}
+
+\section{Corpus and Measurement Summary}
+\label{sec:res-corpus}
+
+Before any comparison, two descriptions of the corpus are needed, because they
+decide whether the question RQ1 asks is even well posed. If test costs within a
+task were uniform, cost-aware scheduling would have nothing to correct.
+
+\begin{table}[htbp]
+\centering
+\caption{Admission funnel: how the $100$ pilot tasks were obtained.}
+\label{tab:res-funnel}
+\small
+\begin{tabularx}{\textwidth}{@{}X r r@{}}
+\toprule
+Stage & Faults remaining & Removed\\
+\midrule
+ConDefects Python, all faults            & \pend & ---\\
+Faulty and reference versions both usable & \pend & \pend\\
+At least one test rejects the faulty version & \pend & \pend\\
+Reference passes every pooled test        & \pend & \pend\\
+Reference finishes within the sandbox clock & \pend & \pend\\
+Pool size at or above the minimum         & \pend & \pend\\
+\midrule
+\textbf{Admitted}                         & \pend & \\
+\textbf{Drawn for the pilot}              & $100$ & \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{The two distributions that decide whether cost-aware scheduling has
+anything to work with.}
+\label{tab:res-arena}
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabularx}{\textwidth}{@{}l r X@{}}
+\toprule
+Quantity & Value & How to read it\\
+\midrule
+Tasks / tests / patches & \pend & The size of the pilot universe\\
+\midrule
+\multicolumn{3}{@{}p{\textwidth}@{}}{\emph{Per-test CPU cost.} If the high
+percentiles sit close to the median, costs are near-uniform and the cost term
+has nothing to correct. The spread \emph{within} a task is the one that
+matters.}\\[2pt]
+\quad median              & \pend\,s & \\
+\quad 90th percentile     & \pend\,s & \\
+\quad 99th percentile     & \pend\,s & \\
+\quad median within-task coefficient of variation & \pend & \\
+\midrule
+\multicolumn{3}{@{}p{\textwidth}@{}}{\emph{Per-test rejection rate.} If a
+handful of tests reject everything, any memory finds them quickly and every
+configuration converges to the same behaviour.}\\[2pt]
+\quad mean                & \pend & \\
+\quad median              & \pend & \\
+\quad tests that never reject & \pend\,\% & \\
+\midrule
+\textbf{Median within-task $\mathrm{corr}(\log c,\,K)$} & \textbf{\pend} &
+\textbf{The sign decides whether dividing by cost is a refinement or a
+correction. If positive, expensive tests are \emph{more} likely to reject, so
+ranking on rejection alone is actively drawn towards the expensive end of the
+pool.}\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{RQ1: Effectiveness of Cost-Aware Scheduling}
+\label{sec:res-rq1}
+
+\subsection{Head-to-Head}
+
+\begin{table}[htbp]
+\centering
+\caption[Validation cost per configuration (RQ1)]{RQ1 head-to-head over the
+pilot (\code{frtp}~\citep{qi2013frtp}, \code{coverage} =
+$\mathrm{RTP_{add}}$~\citep{rothermel2001prioritizing}). The upper block is
+absolute cost; the lower block is the paired contrast against \code{sched},
+with cluster-bootstrap intervals over tasks ($10{,}000$ resamples) and
+Holm-corrected Wilcoxon $p$. \textbf{CPU / exec.} separates ``cheaper'' from
+``fewer'': if \code{sched} wins on CPU while paying \emph{more} executions, the
+two units of account disagree in sign.}
+\label{tab:res-rq1}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}l r r r r@{}}
+\toprule
+Configuration & Total CPU (s) & Exec. / round & CPU / round (s) &
+\textbf{CPU / exec. (s)}\\
+\midrule
+\code{natural} (incumbent) & \pend & \pend & \pend & \pend\\
+\code{random} (control)    & \pend & \pend & \pend & \pend\\
+\code{frtp} & \pend & \pend & \pend & \pend\\
+\code{coverage} & \pend & \pend & \pend & \pend\\
+\textbf{\code{sched} (ours)} & \pend & \pend & \pend & \pend\\
+\midrule
+\multicolumn{5}{@{}l@{}}{\emph{Paired contrasts}}\\
+\addlinespace
+Contrast & $\Delta$ CPU & 95\,\% CI & $p$ / tasks won & $\Delta$ exec.\\
+\addlinespace
+\code{sched} vs \code{natural}  & \pend & \pend & \pend & \pend\\
+\code{sched} vs \code{random}   & \pend & \pend & \pend & \pend\\
+\code{sched} vs \code{frtp}     & \pend & \pend & \pend & \pend\\
+\code{sched} vs \code{coverage} & \pend & \pend & \pend & \pend\\
+\code{frtp} vs \code{natural}   & \pend & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The contrast against \code{natural} establishes that scheduling is worth doing
+at all; the contrast against \code{frtp} tests this work's specific claim,
+because \frtp\ already has a memory, so any difference there is attributable to
+the rate and the cost term rather than to remembering.
+
+\subsection{Results by Band}
+\label{sec:res-bands}
+
+Section~\ref{sec:disc-limits} states three conditions under which the method is
+expected to pay off, and Section~\ref{sec:exp-bands} fixed the band boundaries
+before the run. Per-band tables for all three axes are produced by
+\code{analyse}; the one that carries the argument is
+Table~\ref{tab:res-conditions}, which walks from the whole corpus to the
+sub-population where all three conditions hold.
+
+\begin{table}[htbp]
+\centering
+\caption[Whole corpus against the three-condition band]{The two headline views.
+The first row is what a deployment gets pointing the tool at everything; the
+second is what the mechanism does where the mechanism applies.}
+\label{tab:res-conditions}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}l r r l r l@{}}
+\toprule
+Population & tasks & \multicolumn{2}{c}{vs \code{natural}} &
+\multicolumn{2}{c}{vs \code{frtp}}\\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}
+ & & $\Delta$ CPU & 95\,\% CI & $\Delta$ CPU & 95\,\% CI\\
+\midrule
+Whole corpus & $100$ & \pend & \pend & \pend & \pend\\
+\addlinespace
+C1 only: $|P| \ge 10$ & \pend & \pend & \pend & \pend & \pend\\
+C1 + C2: and costs not flat & \pend & \pend & \pend & \pend & \pend\\
+\textbf{C1 + C2 + C3: and not \code{easy}/\code{trivial}} &
+  \pend & \pend & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The expected shape is a gradient, and the gradient is the argument: each step
+down removes a sub-population where no effect is mechanically possible. A flat
+result across the three steps would mean the conditions of
+Section~\ref{sec:disc-limits} are not the operative ones, and the explanation
+of \emph{why} the method works is wrong even if the headline number survives.
+Two per-band checks are soundness rather than findings: the \code{degenerate}
+pool band and the \code{trivial} difficulty band must both show no difference
+at all, because in each every configuration runs one identical scan.
+
+\subsection{Learning Curve}
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{Mean validation CPU per round, rounds $1$ to $20$, one line per
+configuration. Round $1$ is identical across configurations by construction,
+because the store is empty.}
+\caption{Validation CPU per round. Round~$1$ is the same for every
+configuration; what happens afterwards is the store filling in. An incumbent
+line that stays flat is the loop never learning anything about its pool.}
+\label{fig:res-curve}
+\end{figure}
+
+\pendnote{The reading to check: how many rounds the memory configurations need
+before they separate from \code{natural}, and whether \code{sched} continues to
+separate from \code{frtp} after the rejection information has saturated --- the
+cost estimates keep improving after the rejection counts stop changing, so
+continued separation is the signature of the cost term doing work.}
+
+\subsection{Soundness Check}
+
+\begin{table}[htbp]
+\centering
+\caption{Soundness: every Block~A configuration must accept exactly the same
+patches on exactly the same rounds (Definition~\ref{def:soundness}). A
+difference here is an implementation bug, not a finding.}
+\label{tab:res-soundness}
+\small
+\begin{tabular}{@{}l r r@{}}
+\toprule
+Configuration & \code{success@B} & First-accept round (mean)\\
+\midrule
+\code{natural}  & \pend & \pend\\
+\code{random}   & \pend & \pend\\
+\code{frtp}     & \pend & \pend\\
+\code{coverage} & \pend & \pend\\
+\code{sched}    & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{RQ2: Effectiveness of Selected Hints}
+\label{sec:res-rq2}
+
+\begin{table}[htbp]
+\centering
+\caption[Generation-side results (RQ2)]{Generation-side results. The baseline is \code{no-mem}, which is
+independent repeated prompting --- the strategy
+\citet{chen2025conversational} found to beat conversational repair;
+\code{chat} is a \textsc{ChatRepair}-style transcript~\citep{xia2024chatrepair}.}
+\label{tab:res-rq2-main}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}l r r r r r@{}}
+\toprule
+Configuration & Dup.\ rate & \code{success@B} & First acc. &
+Prompt tok. & Compl.\ tok.\\
+\midrule
+\code{no-mem} (baseline) & \pend & \pend & \pend & \pend & \pend\\
+\code{chat} (transcript) & \pend & \pend & \pend & \pend & \pend\\
+\code{exclusion} (prohibition) & \pend & \pend & \pend & \pend & \pend\\
+\textbf{\code{hints} (ours)} & \pend & \pend & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Paired contrasts for RQ2, on the duplicate rate.}
+\label{tab:res-rq2-contrasts}
+\small
+\begin{tabular}{@{}l r l r r@{}}
+\toprule
+Contrast & $\Delta$ duplicate rate & 95\,\% CI & $p$ & tasks won\\
+\midrule
+\code{hints} vs \code{no-mem}    & \pend & \pend & \pend & \pend\\
+\code{hints} vs \code{chat}      & \pend & \pend & \pend & \pend\\
+\code{hints} vs \code{exclusion} & \pend & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Three comparisons run at once and they answer different things. Against
+\code{no-mem}, whether showing anything at all helps --- a real bar, since
+independent repeated sampling is published as the stronger of the two obvious
+strategies. Against \code{chat}, whether \emph{selecting} beats
+\emph{accumulating}. Against \code{exclusion}, whether the \emph{form} matters:
+it carries the same facts phrased as what not to do, so a difference there
+isolates framing from content. The token columns matter because a transcript
+grows every round while \code{hints} stays flat by construction --- a
+duplicate-rate win that costs twice the tokens is a different result.
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{Duplicate rate by round, one line per Block~B configuration,
+rounds $1$ to $20$. Round $1$ carries no hints in any configuration.}
+\caption{Duplicate rate over the course of a session. The gap between
+configurations should widen with round number, because that is when the history
+exists to be selected from.}
+\label{fig:res-dupes}
+\end{figure}
+
+\section{RQ3: Combined Effect}
+\label{sec:res-rq3}
+
+\begin{table}[htbp]
+\centering
+\caption{The $2\times2$ design of Table~\ref{tab:factorial}, measured. The
+combined cell is the full system.}
+\label{tab:res-rq3}
+\footnotesize
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}l r r r r@{}}
+\toprule
+Configuration & Total CPU (s) & Exec. / round & Dup.\ rate &
+\code{success@B}\\
+\midrule
+\code{no-mem} (neither)       & \pend & \pend & \pend & \pend\\
+\code{sched} (scheduling only)& \pend & \pend & \pend & \pend\\
+\code{hints} (hints only)     & \pend & \pend & \pend & \pend\\
+\textbf{\code{sched+hints} (both)} & \pend & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Interaction. ``Additive prediction'' is what the combined cell would
+cost if the two mechanisms did not interact; the residual is the interaction
+term.}
+\label{tab:res-rq3-interaction}
+\small
+\begin{tabular}{@{}l r r r@{}}
+\toprule
+Quantity & Additive prediction & Measured & Residual (95\,\% CI)\\
+\midrule
+Total CPU         & \pend & \pend & \pend\\
+Executions / round& \pend & \pend & \pend\\
+Duplicate rate    & \pend & \pend & \pend\\
+\code{success@B}  & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The claimed feeding is specific enough to check: hints cut how many redundant
+candidates reach validation, which lowers CPU beyond what re-ordering alone
+can; scheduling supplies the rejection record hint selection ranks on. A
+residual indistinguishable from zero means the two are independent improvements
+that happen to ship together --- still useful, but then they are two
+contributions rather than one system, and RQ3 is refuted.
+
+\section{RQ4: Ablation and Sensitivity}
+\label{sec:res-rq4}
+
+\subsection{Which Term Carries the Scheduling Effect}
+
+\begin{table}[htbp]
+\centering
+\caption{The ablation ladder of Table~\ref{tab:ladder}, measured. One variable
+changes per row. Exploratory: intervals are reported without correction and no
+claim rests on a single row.}
+\label{tab:res-ladder}
+\small
+\begin{tabularx}{\textwidth}{@{}l l r l X@{}}
+\toprule
+Step & What changes & $\Delta$ CPU & 95\,\% CI & Conclusion if it does not clear\\
+\midrule
+\code{natural} $\to$ \code{cost-only} & cost only        & \pend & \pend & Cost alone is not a usable signal\\
+\code{natural} $\to$ \code{kill-only} & rejection only   & \pend & \pend & The memory term is ornament\\
+\code{natural} $\to$ \code{frtp}      & published step   & \pend & \pend & \frtp\ does not reproduce here\\
+\code{frtp} $\to$ \code{kill-only}    & count $\to$ rate & \pend & \pend & The denominator buys nothing\\
+\code{kill-only} $\to$ \code{sched}   & divide by cost   & \pend & \pend & Cost-awareness is ornament\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{How Much to Divide by Cost}
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{Total validation CPU against the cost exponent $c$, swept over
+$[0, 1.25]$, paired per task with bootstrap bands. $c=0$ is ranking on the
+rejection rate alone; $c=1$ is the plain ratio.}
+\caption{Cost-exponent sweep. An interior minimum would mean the full cost
+division over-corrects, which is what a noisy online denominator predicts; a
+minimum at an endpoint would mean one of the two published positions is already
+right.}
+\label{fig:res-csweep}
+\end{figure}
+
+\subsection{The Hint Dose}
+
+\begin{table}[htbp]
+\centering
+\caption{Hint dose: number of hints crossed with disclosure level. ``Leakage''
+is the share of rejected patches whose rejecting tests are disjoint from what
+the prompt showed --- the patch satisfied everything it was told and died
+elsewhere.}
+\label{tab:res-dose}
+\small
+\begin{tabular}{@{}l l r r r r@{}}
+\toprule
+$k$ & Disclosure & Duplicate rate & \code{success@B} & Leakage & Prompt tokens\\
+\midrule
+$1$ & \code{full}            & \pend & \pend & \pend & \pend\\
+$2$ & \code{full} (default)  & \pend & \pend & \pend & \pend\\
+$3$ & \code{full}            & \pend & \pend & \pend & \pend\\
+$2$ & \code{no-required-line}& \pend & \pend & \pend & \pend\\
+$2$ & \code{sample-only}     & \pend & \pend & \pend & \pend\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\figplaceholder{Dose-response curve: leakage and \code{success@B} against the
+amount disclosed, from \code{sample-only} through \code{no-required-line} to
+\code{full}, at $k \in \{1,2,3\}$.}
+\caption{The disclosure dose. A curve that is flat across both axes means there
+is no dose and the disclosure dial does not exist; a leakage rate that climbs
+with disclosure means the model is beginning to satisfy the tests it was shown
+rather than repairing the fault.}
+\label{fig:res-dose}
+\end{figure}
+
+\subsection{Sensitivity to Design Choices}
+
+\begin{table}[htbp]
+\centering
+\caption{Sensitivity configurations, each paired against \code{sched}. These
+belong to threats to validity rather than to the contribution: the question is
+whether RQ1's answer survives choices made for other reasons.}
+\label{tab:res-sensitivity}
+\small
+\begin{tabularx}{\textwidth}{@{}l X r l@{}}
+\toprule
+Configuration & What it changes & $\Delta$ CPU & 95\,\% CI\\
+\midrule
+\code{sched-cs-median} & Cold start at the median instead of the maximum & \pend & \pend\\
+\code{sched-cs-q75}    & Cold start at the $75$th percentile & \pend & \pend\\
+\code{sched-bucket}    & Discrete buckets instead of a continuous score & \pend & \pend\\
+\code{sched-explore0}  & No exploration ($\varepsilon = 0$) & \pend & \pend\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Summary of Findings}
+\label{sec:res-summary}
+
+\pendnote{One short paragraph per research question, stating the answer, the
+interval, and --- where the pilot does not settle the question --- saying so
+plainly rather than reporting a direction that the interval does not support.
+RQ1 and RQ3 carry Holm-corrected primary contrasts; the ablation ladder and both
+sweeps are exploratory and are to be described as such.}

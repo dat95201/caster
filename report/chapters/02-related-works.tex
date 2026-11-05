@@ -1,203 +1,320 @@
 \chapter{Related Works}
 \label{ch:related}
 
-Work relevant to this proposal falls into four families: (1)
-generate-and-validate repair and the size of its validation bill, (2)
-regression test-case prioritisation, which is where the scheduling machinery
-comes from, (3) prioritisation specialised to repair loops, which is where the
-direct baseline lives, and (4) LLM-based repair loops and their token
-economics, which is where the proposer-side half of the design belongs. This
-chapter walks the four, consolidates them into one table, and distils the gaps.
+Work related to this report falls into three groups. The first reduces the cost
+of checking a candidate patch. The second helps the model explore the repair
+space instead of repeating itself. The third asks what should go into the prompt
+at all. \caster\ touches all three: it schedules validation, it steers
+generation, and it does so by selecting a small amount of context rather than
+accumulating all of it.
 
-\section{Survey of Representative Works}
-\label{sec:survey}
+\section{Reducing Patch Validation Cost}
+\label{sec:rel-validation}
 
-\paragraph{Generate-and-validate repair and the validation bill.}
-\textsc{GenProg}~\citep{legoues2012genprog} established the loop that the rest
-of this literature refines: mutate, validate against the test suite, keep what
-survives. Its systematic study repaired $55$ of $105$ real
-bugs~\citep{legoues2012systematic}, and validation dominates its runtime,
-because each candidate is run against the suite from scratch. The structural weakness of validating against a
-test suite was made precise by \citet{qi2015plausibility}, who re-examined the
-patches reported by three generate-and-validate systems and found that most
-were \emph{plausible} rather than correct --- \textsc{GenProg} produced
-correct patches for $2$ defects out of $18$ for which it produced a plausible
-patch, \textsc{AE} $3$ of $27$, and \textsc{RSRepair} $2$ of $10$. That result
-is the reason this proposal treats the strength of the oracle (how many probes
-a patch must survive) as a parameter to be stated rather than an implementation
-detail, and the reason the soundness invariant of
-Section~\ref{sec:soundness} is asserted on every cell.
-Defects4J~\citep{just2014defects4j} supplied the benchmark the family
-standardised on; ConDefects~\citep{wu2024condefects} supplies the one used
-here, for the data-leakage reason given in Section~\ref{sec:scope}.
+Patch validation has long been recognised as a bottleneck of test-based repair,
+and prior work reduces its cost along three largely complementary axes. The
+three are easiest to tell apart by asking which part of the bill each one
+attacks. Writing the total validation cost of a repair session as a product of
+three factors,
+\begin{equation}
+\text{validation cost} \;\approx\;
+\underbrace{N_{\text{cand}}}_{\substack{\text{candidates that}\\ \text{reach validation}}}
+\;\times\;
+\underbrace{r}_{\substack{\text{tests run}\\ \text{per candidate}}}
+\;\times\;
+\underbrace{\bar{c}}_{\substack{\text{cost of one}\\ \text{test run}}},
+\label{eq:three-factors}
+\end{equation}
+each family reduces a different factor, and none of them reduces another
+family's. Figure~\ref{fig:three-axes} places the surveyed systems on that
+decomposition and marks where this work sits.
 
-\paragraph{Regression test-case prioritisation.}
-\citet{rothermel2001prioritizing} defined the problem and the two greedy
-families that still dominate it: \emph{total} strategies, which rank a test by
-how much it covers, and \emph{additional} strategies, which rank by how much it
-covers that nothing scheduled so far has covered. The
-survey of \citet{lou2019survey} organises two decades of refinements of those
-two. Crucially for this proposal, \citet{elbaum2001cost} observed early that
-the field's standard metric assumed uniform test costs and uniform fault
-severities, and proposed a cost-cognizant replacement. That paper is the
-philosophical ancestor of the $\hat{m}$ term here; what it did not have, and
-what this work adds, is an \emph{online} cost estimate learned inside the loop
-rather than a cost supplied in advance.
-
-\paragraph{Prioritisation inside a repair loop.}
-\citet{qi2013frtp} introduced fault-recorded testing prioritisation (\frtp),
-implemented as \textsc{TrpAutoRepair}, and evaluated it against
-\textsc{GenProg} on five subject programs with sixteen real bugs: it matched or
-beat \textsc{GenProg}'s success rate and improved repair efficiency in fifteen
-of the sixteen. \frtp\ ranks a test case by its \emph{failing count} --- the
-number of validated patches the case has already falsified --- and gathers that
-information from the repair process itself rather than from a separate
-profiling pass. It is the published baseline for this work, and the arm named
-\code{fault-record} in Chapter~\ref{ch:evaluation} implements exactly that
-ranking, not a weakened variant. \citet{venugopal2020mpp} extend the idea with
-modification-point awareness, maintaining a table whose entries are the
-``patch killing count'' of a test case against a program variant, which is the
-same quantity under another name.
-
-The most thorough measurement of patch-validation cost is
-\citet{lou2024aprregression}, who study $2{,}532{,}915$ patches produced by
-twelve APR systems on Defects4J. Two of their findings bear directly on this
-proposal. First, they report results in test executions rather than seconds,
-stating that executions are ``more stable and more suitable for future work to
-reproduce''. Second, they find that \emph{selection} dominates
-\emph{prioritisation} in their setting: class-level regression test selection
-alone reduces executions by about $37\,\%$ for \textsc{PraPR}, where the best
-prioritisation approach reduces them by only about $15\,\%$. Both findings are
-properties of their setting rather than of the problem, and
-Section~\ref{sec:gap} explains why neither transfers to the one studied here.
-
-\paragraph{LLM repair loops and their token economics.}
-\textsc{ChatRepair}~\citep{xia2024chatrepair} made the conversational loop
-standard, repairing $162$ of $337$ Defects4J bugs at roughly \$0.42 each by
-feeding failing-test feedback back into the conversation.
-\textsc{CigaR}~\citep{hidvegi2024cigar} attacked its cost directly and reports
-$127$K tokens per bug against a reimplemented \textsc{ChatRepair} baseline's
-$467$K, a $73\,\%$ reduction, while producing correct patches for $171$ of
-$429$ bugs. The sharpest result in the family is negative:
-\citet{chen2025conversational} hold the budget fixed at $24$ model calls per
-bug and find that \emph{independent repeated prompting} repairs $23$ bugs where
-\textsc{ChatRepair} repairs $18$, and that $65\,\%$ of \textsc{ChatRepair}'s
-generated patches are duplicates. The obvious iterative strategy is therefore
-already published as worse than simply drawing again, which fixes the baseline
-any steering arm in this project must beat.
-
-\paragraph{The immediate predecessor.}
-\cegmem\ --- the author's previous study, described in detail in
-Section~\ref{sec:cegmem-premise} --- sits between the two halves. It keyed a
-memory of refuted patches by a failure type $\theta = (\text{edit location})
-\times (\text{violated property})$ and used it both to block redundant
-candidates before the oracle ran and to steer the proposer away from exhausted
-classes. On $309$ ConDefects tasks it cut oracle calls per episode by
-$7.07\times$ and raised the repair rate from $0.526$ to $0.581$. It is cited
-here as the premise of this proposal rather than as a competitor.
-
-\section{Comparison Table}
-\label{sec:comparison}
-
-Table~\ref{tab:related} consolidates the surveyed systems against the four
-design dimensions this proposal cares about: \textbf{M1} what the memory is
-keyed by, \textbf{M2} what quantity is ranked, \textbf{M3} whether the cost of
-a probe enters that quantity, and \textbf{M4} whether the evidence is returned
-to the proposer.
-
-\begin{table}[H]
+\begin{figure}[htbp]
 \centering
-\caption{Representative works against the four dimensions. ``---'' means the
-dimension is absent from the system.}
+\resizebox{0.80\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  fam/.style={draw=black!55,rounded corners=2pt,align=center,inner sep=6pt,
+              text width=44mm,minimum height=13mm,fill=black!3},
+  ours/.style={draw=bkblue,line width=0.9pt,rounded corners=2pt,align=center,
+               inner sep=6pt,text width=44mm,minimum height=13mm,fill=bkblue!10},
+  usbox/.style={draw=bkblue,line width=0.9pt,rounded corners=2pt,align=center,
+                inner sep=9pt,fill=bkblue!10},
+  sys/.style={align=center,font=\scriptsize,text width=46mm},
+  fac/.style={align=center,font=\small\itshape,text width=46mm},
+  arr/.style={-{Stealth[length=2.6mm]},draw=black!60}
+]
+% --- the cost expression across the top ---
+\node (f1) at (0,0)    [fac] {$N_{\text{cand}}$\\ candidates validated};
+\node (f2) at (5.4,0)  [fac] {$r$\\ tests per candidate};
+\node (f3) at (10.8,0) [fac] {$\bar{c}$\\ cost of one test run};
+\node at (2.7,0) {$\times$};
+\node at (8.1,0) {$\times$};
+
+% --- the three families: identical boxes, two lines each ---
+\node (a1) at (0,-1.9)    [fam] {\textbf{Execution-free}\\ \textbf{verification}};
+\node (a2) at (5.4,-1.9)  [ours]{\textbf{Test}\\ \textbf{scheduling}};
+\node (a3) at (10.8,-1.9) [fam] {\textbf{Execution}\\ \textbf{acceleration}};
+
+\draw[arr] (f1) -- (a1);
+\draw[arr] (f2) -- (a2);
+\draw[arr] (f3) -- (a3);
+
+% --- representative systems, three lines each ---
+\node (s1) at (0,-3.9)    [sys] {R2E-Gym~\citep{jain2025r2egym}\\[1pt]
+                                 \emph{a learned verifier skips}\\
+                                 \emph{some executions}};
+\node (s2) at (5.4,-3.9)  [sys] {\frtp~\citep{qi2013frtp}\;\textbullet\;
+                                 Agentless~\citep{xia2025agentless}\\[1pt]
+                                 \emph{rank by how many patches}\\
+                                 \emph{a test has rejected}};
+\node (s3) at (10.8,-3.9) [sys] {UniAPR~\citep{chen2021uniapr}\;\textbullet\;
+                                 ExpressAPR~\citep{xiao2024expressapr}\\[1pt]
+                                 \emph{warm runtime, mutation-}\\
+                                 \emph{testing techniques}};
+
+\draw[arr] (a1) -- (s1);
+\draw[arr] (a2) -- (s2);
+\draw[arr] (a3) -- (s3);
+
+% --- this work ---
+\node (us) at (5.4,-6.5) [usbox]
+  {\textbf{\caster\ (this work)}\\[6pt]
+   \footnotesize
+   \begin{tabular}{@{}l@{\;\;}c@{\;\;}l@{}}
+     rejection rate $\div$ measured cost
+       & $\longrightarrow$ & lowers $r$ \emph{and} the $\bar{c}$ actually paid\\[4pt]
+     $k$ hints from the same record
+       & $\longrightarrow$ & lowers $N_{\text{cand}}$\\
+   \end{tabular}};
+\draw[arr] (s2) -- (us);
+
+% --- the composability note ---
+\node[align=center,font=\footnotesize,text width=0.92\textwidth] at (5.4,-8.9)
+  {The three families multiply rather than compete: a deployment can run an
+   accelerated executor, a cost-aware schedule on top of it, and a verifier in
+   front of both.};
+\end{tikzpicture}}
+\caption[The three directions in validation-cost reduction]{The three
+directions in reducing patch validation cost, placed on the factors of
+Equation~\eqref{eq:three-factors}. This work sits in test scheduling, and is
+the only entry we found there whose ranking reads the cost of a test as well
+as its record of rejecting patches.}
+\label{fig:three-axes}
+\end{figure}
+
+\paragraph{Execution acceleration} makes each test run cheaper. Because patch
+validation repeatedly runs the same test suite on slightly different program
+variants, it is closely related to mutation analysis, and several works adapt
+acceleration techniques from that field. \textsc{UniAPR}~\citep{chen2021uniapr}
+validates patches on the fly within a single JVM, reloading only the patched
+classes through the HotSwap mechanism and resetting JVM state between patches to
+avoid interference. \textsc{ExpressAPR}~\citep{xiao2024expressapr} identifies
+five classes of mutation-testing acceleration techniques suitable for patch
+validation and integrates them into a general-purpose validator for Java,
+accelerating validation by $137.1\times$ over plain validation and $8.8\times$
+over the prior state of the art. These techniques reduce the cost of each
+execution but leave unchanged \emph{which} tests are executed and \emph{in which
+order}, and they are tied to a specific language runtime.
+
+\paragraph{Execution-free verification} avoids running tests for some candidates
+by assessing them with a learned model. In repository-level repair,
+\textsc{R2E-Gym}~\citep{jain2025r2egym} compares execution-based and
+execution-free verifiers and finds their strengths complementary. Test-based
+verifiers often fail to distinguish among candidates, while execution-free
+verifiers are biased and tend to rely on stylistic features. Combining the two
+yields substantially higher performance than either alone. Such verifiers are
+therefore best seen as a complement to test execution rather than a replacement
+for it.
+
+\paragraph{Test scheduling} decides which tests to run and in which order.
+\frtp~\citep{qi2013frtp} records the tests that failed earlier candidate patches
+during the repair process and executes them first, so that invalid patches are
+rejected after fewer test executions. Because this information comes from the
+repair process itself, \frtp\ incurs only trivial overhead. Its implementation,
+\textsc{TrpAutoRepair}, performed at least as well as \textsc{GenProg} in
+success rate while significantly improving repair efficiency, on $15$ of $16$
+real-world bugs. In
+LLM-based repair, \textsc{Agentless}~\citep{xia2025agentless} first records
+which existing tests pass on the original program and asks the LLM to select
+those relevant to the edited code. It then rejects any candidate that causes a
+selected test to fail.
+
+These schedulers optimise the \emph{number} of test executions rather than their
+\emph{cost}. In regression testing, by contrast, it has long been recognised
+that test costs vary and that prioritisation should account for
+them~\citep{elbaum2001cost}. In patch validation this distinction matters: a
+test that rejects many candidates but takes minutes to run may be a worse first
+choice than a slightly less discriminating test that finishes in milliseconds.
+
+Our approach departs from these schedulers by scheduling tests using both their
+failure history within the repair session and their execution cost. Because it
+operates purely at the scheduling level, it can be combined with execution
+acceleration~\citep{chen2021uniapr,xiao2024expressapr} and execution-free
+verification~\citep{jain2025r2egym}.
+
+\section{Steering Generation in LLM-Based Repair}
+\label{sec:rel-steering}
+
+A second line of work aims to help LLMs explore the repair space more
+effectively instead of repeatedly sampling similar candidates.
+
+\paragraph{Search-based approaches} organise repair attempts into an explicit
+search structure. \textsc{SWE-Search}~\citep{antoniades2025swesearch} integrates
+Monte Carlo Tree Search into a software agent and uses a hybrid value function,
+in which the LLM provides both numerical estimates and qualitative assessments,
+to balance exploration and exploitation. This yields a $23\,\%$ relative
+improvement on SWE-bench over agents without search. Search broadens
+exploration, but every additional branch produces candidates that must be
+validated, which increases the cost this work aims to reduce.
+
+\paragraph{In-loop memory approaches} retain information from earlier attempts
+on the same bug. \textsc{ChatRepair}~\citep{xia2024chatrepair} keeps previously
+generated incorrect patches and their test-failure information in the
+conversation so that the LLM avoids repeating them.
+\citet{chen2025conversational}, however, found that duplicate patches still
+constituted $65\,\%$ of the patches \textsc{ChatRepair} generated during
+plausible patch generation on Defects4J. Moreover, when the underlying repair
+hypothesis is flawed, feedback-driven refinement tends to produce only
+superficial variants of the same idea~\citep{le2026semantic}. Outside program
+repair, \textsc{Reflexion}~\citep{shinn2023reflexion} lets language agents
+reflect verbally on feedback from failed trials and stores these reflections in
+an episodic memory that conditions subsequent attempts. In both cases, the
+history is accumulated or summarised \emph{as it arrives} rather than selected
+according to what the next iteration needs.
+
+\paragraph{Hypothesis-driven approaches} make the LLM reason explicitly about
+the cause of a bug before or while patching it.
+\textsc{AutoSD}~\citep{kang2025autosd} prompts the LLM to formulate hypotheses
+about the bug, together with debugger experiments that test them. It executes
+these experiments and lets the LLM judge whether each hypothesis holds before
+generating a fix. \textsc{ThinkRepair}~\citep{yin2024thinkrepair} first builds a
+knowledge pool of chains of thought that led to validated fixes, then repairs a
+new bug by selecting examples from this pool for few-shot prompting, optionally
+refining the patch with test feedback. These approaches improve the quality of
+individual hypotheses but do not explicitly track which hypotheses have already
+been refuted within a repair session.
+
+\paragraph{Experience-driven approaches} transfer knowledge across bugs.
+\textsc{SWE-Exp}~\citep{chen2025sweexp} observes that memoryless agents
+redundantly re-explore failed trajectories. It addresses this with an experience
+bank that captures both successful and failed repair attempts and distills
+reusable knowledge at multiple levels, from problem comprehension to concrete
+code changes. Such experience is retrieved from \emph{other} bugs, whereas the
+history most informative for avoiding repeated failures is often the one
+produced on the current bug.
+
+In contrast, we do not accumulate or summarise the session history; at each
+iteration \caster\ selects a small set of hints from it, ranked by the per-test
+rejection statistics that its validation scheduler already maintains, so that
+the LLM is directed by the tests that most often refute candidates and away from
+the hypotheses they have refuted. Unlike search-based approaches, it does so
+without generating additional candidates.
+
+\section{Context Selection for LLM-Based Repair}
+\label{sec:rel-context}
+
+The effectiveness of LLM-based repair depends heavily on what information is
+included in the prompt. \citet{parasaram2025factselection} systematically
+studied the bug-related facts that can be provided to an LLM, such as stack
+traces, test code, and repository context. They found that while each type of
+fact helps fix some bugs, repair effectiveness is non-monotonic in the number of
+facts included, so overly rich prompts degrade performance, and no single fact
+set is optimal across bugs. Their bug-specific fact selector repaired $88$ of
+$157$ bugs, $17\,\%$ above the best configuration. This selection,
+however, operates on \emph{static} facts about the bug and is performed once,
+before generation begins.
+
+\caster\ applies the same principle --- that less but well-chosen context is
+better --- to the \emph{dynamic} history of an iterative repair loop. It
+reselects a small set of hints at every iteration as new patches are tried and
+new failures are observed.
+
+\section{Summary: Where This Work Sits}
+\label{sec:rel-summary}
+
+Figure~\ref{fig:three-axes} separated the surveyed work by \emph{which part of
+the bill} it reduces. This section asks a narrower question about the
+scheduling family and its neighbours: of the design decisions \caster\ makes,
+which ones has someone already made?
+
+Three dimensions distinguish it:
+
+\begin{description}[leftmargin=1.5cm,style=nextline,itemsep=2pt,topsep=4pt]
+\item[\textbf{D1}] Does the system decide \emph{which test to run first}?
+\item[\textbf{D2}] Does the \emph{measured cost} of a test enter that decision?
+\item[\textbf{D3}] Does the system \emph{choose} what evidence enters the
+prompt, rather than including all of it or none of it?
+\end{description}
+
+Each dimension is satisfied by published work on its own. What we found no
+occupant for is the combination: Table~\ref{tab:related} lists the systems that
+hold at least one of the three and says, for each, what is still different
+here. Two things about how to read it. Blank cells mean we are not aware of a
+system in that position, to the best of our knowledge, not that none exists ---
+the table is a claim about the literature we surveyed. And D2 is only
+meaningful alongside D1, since the cost of a test can enter a ranking only if
+there is a ranking; there is no D2-without-D1 to look for.
+
+
+
+Only systems holding at least one of D1--D3 appear. Those that reduce a
+different factor of the validation bill --- \textsc{UniAPR},
+\textsc{ExpressAPR}, \textsc{R2E-Gym} --- and those that change the search
+rather than the evidence --- \textsc{SWE-Search}, \textsc{SWE-Exp},
+\textsc{ThinkRepair} --- are placed in Figure~\ref{fig:three-axes} instead,
+because scoring them here would produce a row of dashes and compare nothing.
+
+\begin{table}[htbp]
+\centering
+\caption[The nearest neighbours on the three design dimensions]{The systems
+that occupy at least one of D1--D3, and what still separates each from this
+work. \checkmark\ is full, $\circ$ is partial, blank is absent.}
 \label{tab:related}
-\scriptsize
-\setlength{\tabcolsep}{4pt}
-\begin{tabularx}{\textwidth}{@{}r l l l l c c X@{}}
-\toprule
-\# & System & Yr & M1 key & M2 ranked quantity & M3 & M4 & Headline result\\
-\midrule
-1 & \textsc{GenProg}~\citep{legoues2012genprog,legoues2012systematic} & 2012 & ---  & --- (suite order)      &    &    & 55/105 bugs at \$8 each\\
-2 & \frtp~\citep{qi2013frtp}                           & 2013 & failure class  & kill \emph{count}      &    &    & Faster than GenProg on 15/16\\
-3 & Cost-cognizant TCP~\citep{elbaum2001cost}          & 2001 & ---            & coverage / cost        & \checkmark &  & $\mathrm{APFD}_c$ metric\\
-4 & Additional greedy~\citep{rothermel2001prioritizing}& 2001 & ---            & marginal coverage      &    &    & The $\mathrm{RTP_{add}}$ family\\
-5 & MPP~\citep{venugopal2020mpp}                       & 2020 & modif.\ point  & patch killing count    &    &    & Faster patch validation\\
-6 & APR\,$\times$\,RTS~\citep{lou2024aprregression}    & 2024 & ---            & selection + priority   &    &    & 2.53M patches; sel.\ $>$ prior.\\
-7 & \textsc{ChatRepair}~\citep{xia2024chatrepair}      & 2024 & transcript     & --- (suite order)      &    & \checkmark & 162/337 at \$0.42/bug\\
-8 & \textsc{CigaR}~\citep{hidvegi2024cigar}            & 2024 & transcript     & --- (suite order)      &    & \checkmark & 127K vs 467K tokens/bug\\
-9 & Repeated sampling~\citep{chen2025conversational}   & 2025 & none           & ---                    &    &    & 23 vs 18 bugs; 65\% dupes\\
-10& \cegmem\ (premise)                                 & 2026 & failure class  & --- (pool order)       &    & \checkmark & $7.07\times$ fewer oracle calls\\
-\midrule
--- & \textbf{\caster\ (this work)}                     & 2026 & \textbf{test case} & \textbf{rate / cost} & \checkmark & \checkmark & See Sec.~\ref{sec:pilot}\\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\section{Research Gap}
-\label{sec:gap}
-
-Three gaps follow from the table, and the third is the one the pilot measures.
-
-\paragraph{Gap 1 --- the memory is keyed by a class, so it cannot schedule.}
-Every memory in rows 2, 5, 7, 8 and 10 is indexed by something that is not a
-test case: a failure class, a modification point, or a conversation transcript.
-Such an index answers ``has this kind of patch been refuted before?''. It
-cannot answer ``which probe should run first?'', because the probe is not the
-thing being indexed. \cegmem\ is the clean demonstration: its class index
-removed $86\,\%$ of oracle calls and still left every surviving call walking
-the pool in alphabetical order. Re-keying by test case is what makes one record
-serve the scheduler and the prompt at once.
-
-\paragraph{Gap 2 --- the ranked quantity discards the evidence of \emph{not}
-killing.} \frtp\ and its descendants rank on a count of kills. A count cannot
-distinguish a case that has failed to refute ten patches from a case that has
-never been run, because both have count zero, and the distinction is exactly
-what tells you whether to keep paying for the case. A \emph{rate} --- kills
-over attempts --- is the first quantity that reads the denominator, and the
-first that can decay a case whose early record was luck.
-
-\paragraph{Gap 3 --- the cost of a probe is not in the score, and on
-heterogeneous pools that is the term that matters.} Only
-\citet{elbaum2001cost} put cost in the score at all, and they assume it is
-known in advance rather than learned online. This gap is usually invisible
-because of the unit of account: \citet{lou2024aprregression} measure
-executions, for the reproducibility reason quoted above, and under that unit a
-cheap probe and an expensive one are the same event. The measured cost
-distribution of Section~\ref{sec:pilot-arena} shows what that hides here: a
-$58.7\times$ spread between the median and the 99th percentile, \emph{inside}
-the same pool. The pilot's headline (Section~\ref{sec:pilot-measured}) is that
-the two units disagree in sign --- \km\ pays $23.3\,\%$ more executions than
-\frtp\ for $15.7\,\%$ less CPU --- so a study that reports executions alone
-would conclude \frtp\ wins.
-
-Two properties of the setting are worth stating, because they explain why
-\citeauthor{lou2024aprregression}'s ``selection beats prioritisation'' finding
-does not transfer. First, their subjects are Java programs with method-level
-test suites, where regression test selection can skip a test because no changed
-method reaches it. Here a probe is a \emph{whole-program execution on one
-input}: there is no call graph to cut and nothing to select away, so
-prioritisation is the only lever available. Second, their cost unit is uniform
-by construction; here it is not.
-
-\section{Direct Competitors}
-\label{sec:competitors}
-
-\begin{table}[H]
-\centering
-\caption{Direct competitors and the differentiator in each case.}
-\label{tab:competitors}
 \small
-\begin{tabularx}{\textwidth}{@{}l >{\raggedright\arraybackslash}p{0.17\textwidth} X X@{}}
+\setlength{\tabcolsep}{5pt}
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} c c c X@{}}
 \toprule
-Rank & Competitor & Similarity & Our differentiator\\
+System & D1 & D2 & D3 & What is still different here\\
 \midrule
-\#1 & \frtp~\citep{qi2013frtp} & Same place in the loop; a memory that reorders probes & A rate over attempts, not a count of kills; and divided by a measured cost. Pilot: $-15.7\,\%$ CPU against it\\
-\#2 & \cegmem\ (premise) & Same corpus, same oracle, same proposer & Keyed by test case, not failure class; schedules the probe rather than blocking the patch\\
-\#3 & MPP~\citep{venugopal2020mpp} & ``Patch killing count'' table & Same gap as \frtp: a count, no denominator, no cost\\
-\#4 & Cost-cognizant TCP~\citep{elbaum2001cost} & Cost appears in the score & Cost is \emph{learned online} from \code{getrusage} inside the loop, not supplied in advance\\
-\#5 & Additional greedy~\citep{rothermel2001prioritizing} & A scheduling policy over the same pool & Measured here as an arm (Sec.~\ref{sec:pilot-replay}) and found no better than pool order on this corpus\\
-\#6 & APR\,$\times$\,RTS~\citep{lou2024aprregression} & Patch-validation cost, at scale & Selection is unavailable in this setting; and we report CPU, where they report executions\\
-\#7 & \textsc{CigaR}~\citep{hidvegi2024cigar} & Explicit cost-efficiency goal & Their currency is tokens, ours is oracle CPU; the two are complementary halves of the same bill\\
-\#8 & Repeated sampling~\citep{chen2025conversational} & The strong baseline on the proposer side & It is our RQ3 baseline, not our competitor on RQ1; scheduling is orthogonal to how the draw is made\\
+Additional greedy \citep{rothermel2001prioritizing} & \checkmark & & &
+Ranks by coverage of the program, a static property, not by anything the repair
+loop observes\\
+\addlinespace
+\frtp~\citep{qi2013frtp} & \checkmark & & &
+Ranks on a \emph{count} of rejections: no denominator, so it cannot tell an
+unrun test from one that never rejects; and no cost term\\
+\addlinespace
+\textsc{Agentless}~\citep{xia2025agentless} & \checkmark & & &
+The model picks which tests look relevant; nothing records what actually
+rejected what, and nothing is timed\\
+\addlinespace
+Cost-cognizant TCP \citep{elbaum2001cost} & \checkmark & \checkmark & &
+Regression testing, not repair. Costs are supplied before the run rather than
+measured inside it, and no evidence is returned to a generator\\
+\addlinespace
+Fact selection \citep{parasaram2025factselection} & & & \checkmark &
+Selects \emph{static} facts about the bug, once, before generation begins.
+Says nothing about validation, and does not reselect as the session produces
+new failures\\
+\addlinespace
+\textsc{ChatRepair}~\citep{xia2024chatrepair}, \textsc{Reflexion}~\citep{shinn2023reflexion}
+ & & & $\circ$ &
+History reaches the prompt, but it is accumulated rather than selected, so it
+grows with the session and dilutes the few facts that matter\\
+\midrule
+\textbf{\caster\ (this work)} & \checkmark & \checkmark & \checkmark &
+One per-test record drives both the schedule and the prompt\\
 \bottomrule
 \end{tabularx}
 \end{table}
+
+Three gaps follow, and together they are what this work adds. \textbf{(1)}
+Repair-loop schedulers ignore cost: the one line of work that puts cost in the
+ranking~\citep{elbaum2001cost} comes from regression testing and assumes the
+cost is known in advance. \textbf{(2)} A count of rejections discards the
+evidence of \emph{not} rejecting, since a test run ten times that rejected
+nothing and a test never run both score zero; a rate is the first quantity
+that reads the denominator. \textbf{(3)} Session history is accumulated rather
+than selected --- fact selection~\citep{parasaram2025factselection} does
+select, but once, over facts fixed before the first candidate is drawn.

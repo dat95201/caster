@@ -1,33 +1,211 @@
 % =====================================================================
 %  References.
 %
-%  Every entry below was checked against the publisher record, the
-%  paper itself, or both, while this report was written. Where a number
-%  from one of these works appears in the text, the sentence that uses
-%  it was written after reading that number in the source -- not from
-%  memory. See report/data/CITATIONS.md for the per-claim trace.
+%  Entries [1]-[17] are the reference list of the report outline, in the
+%  order the outline gives them. The entries after them are additional
+%  sources that the Background and Experiments chapters need.
 % =====================================================================
 
-% ---------- automated program repair ----------
+% ---------- [1]-[17] : the outline's reference list ----------
 
-@article{legoues2012genprog,
-  author  = {Le Goues, Claire and Nguyen, ThanhVu and Forrest, Stephanie and Weimer, Westley},
-  title   = {{GenProg}: A Generic Method for Automatic Software Repair},
-  journal = {IEEE Transactions on Software Engineering},
-  volume  = {38},
-  number  = {1},
-  pages   = {54--72},
-  year    = {2012},
-  doi     = {10.1109/TSE.2011.104}
+@inproceedings{lin2026torun,
+  author    = {Lin, Zhihao and Zhu, Junhua and Zhou, Mingyi and Wang, Xin and Sun, Zhensu and Yang, Renyu and Lo, David and Li, Li},
+  title     = {To Run or Not to Run: Analyzing the Cost-Effectiveness of Code Execution in {LLM}-Based Program Repair},
+  booktitle = {Proceedings of the ACM on Software Engineering (ISSTA)},
+  year      = {2026},
+  note      = {To appear. arXiv:2606.26978}
 }
 
-@inproceedings{legoues2012systematic,
-  author    = {Le Goues, Claire and Dewey-Vogt, Michael and Forrest, Stephanie and Weimer, Westley},
-  title     = {A Systematic Study of Automated Program Repair: Fixing 55 out of 105 Bugs for \$8 Each},
-  booktitle = {Proceedings of the 34th International Conference on Software Engineering (ICSE)},
-  pages     = {3--13},
-  year      = {2012},
-  doi       = {10.1109/ICSE.2012.6227211}
+@inproceedings{bouzenia2025repairagent,
+  author    = {Bouzenia, Islem and Devanbu, Premkumar and Pradel, Michael},
+  title     = {{RepairAgent}: An Autonomous, {LLM}-Based Agent for Program Repair},
+  booktitle = {Proceedings of the IEEE/ACM 47th International Conference on Software Engineering (ICSE)},
+  address   = {Ottawa, ON, Canada},
+  pages     = {2188--2200},
+  year      = {2025},
+  doi       = {10.1109/ICSE55347.2025.00157}
+}
+
+@inproceedings{xia2024chatrepair,
+  author    = {Xia, Chunqiu Steven and Zhang, Lingming},
+  title     = {Automated Program Repair via Conversation: Fixing 162 out of 337 Bugs for \$0.42 Each using {ChatGPT}},
+  booktitle = {Proceedings of the 33rd ACM SIGSOFT International Symposium on Software Testing and Analysis (ISSTA)},
+  address   = {Vienna, Austria},
+  pages     = {819--831},
+  year      = {2024},
+  doi       = {10.1145/3650212.3680323}
+}
+
+@article{chen2025conversational,
+  author  = {Chen, Aolin and Wu, Haojun and Xin, Qi and Reiss, Steven P. and Xuan, Jifeng},
+  title   = {Studying and Understanding the Effectiveness and Failures of Conversational {LLM}-Based Repair},
+  journal = {arXiv preprint arXiv:2503.15050},
+  year    = {2025}
+}
+
+@article{le2026semantic,
+  author  = {Le, Cuong Chi and Le-Anh, Minh and Van, Cuong Duc and Nguyen, Tien N.},
+  title   = {Semantic Evolution over Populations for {LLM}-Guided Automated Program Repair},
+  journal = {arXiv preprint arXiv:2604.02134},
+  year    = {2026}
+}
+
+@inproceedings{qi2013frtp,
+  author    = {Qi, Yuhua and Mao, Xiaoguang and Lei, Yan},
+  title     = {Efficient Automated Program Repair through Fault-Recorded Testing Prioritization},
+  booktitle = {Proceedings of the 29th IEEE International Conference on Software Maintenance (ICSM)},
+  address   = {Eindhoven, The Netherlands},
+  pages     = {180--189},
+  year      = {2013},
+  doi       = {10.1109/ICSM.2013.29}
+}
+
+@inproceedings{parasaram2025factselection,
+  author    = {Parasaram, Nikhil and Yan, Huijie and Yang, Boyu and Flahy, Zineb and Qudsi, Abriele and Ziaber, Damian and Barr, Earl T. and Mechtaev, Sergey},
+  title     = {The Fact Selection Problem in {LLM}-Based Program Repair},
+  booktitle = {Proceedings of the IEEE/ACM 47th International Conference on Software Engineering (ICSE)},
+  address   = {Ottawa, ON, Canada},
+  pages     = {2574--2586},
+  year      = {2025},
+  doi       = {10.1109/ICSE55347.2025.00162}
+}
+
+@inproceedings{chen2021uniapr,
+  author    = {Chen, Lingchao and Ouyang, Yicheng and Zhang, Lingming},
+  title     = {Fast and Precise On-the-Fly Patch Validation for All},
+  booktitle = {Proceedings of the IEEE/ACM 43rd International Conference on Software Engineering (ICSE)},
+  address   = {Madrid, Spain},
+  pages     = {1123--1134},
+  year      = {2021},
+  doi       = {10.1109/ICSE43902.2021.00104}
+}
+
+@article{xiao2024expressapr,
+  author  = {Xiao, Yuan-An and Yang, Chenyang and Wang, Bo and Xiong, Yingfei},
+  title   = {Accelerating Patch Validation for Program Repair with Interception-Based Execution Scheduling},
+  journal = {IEEE Transactions on Software Engineering},
+  volume  = {50},
+  number  = {3},
+  pages   = {618--635},
+  year    = {2024},
+  doi     = {10.1109/TSE.2024.3359969},
+  note    = {arXiv:2305.03955}
+}
+
+@inproceedings{jain2025r2egym,
+  author    = {Jain, Naman and Singh, Jaskirat and Shetty, Manish and Zheng, Liang and Sen, Koushik and Stoica, Ion},
+  title     = {{R2E-Gym}: Procedural Environments and Hybrid Verifiers for Scaling Open-Weights {SWE} Agents},
+  booktitle = {Proceedings of the 39th Conference on Neural Information Processing Systems (NeurIPS)},
+  address   = {San Diego, CA, USA},
+  year      = {2025},
+  note      = {arXiv:2504.07164}
+}
+
+@article{xia2025agentless,
+  author  = {Xia, Chunqiu Steven and Deng, Yinlin and Dunn, Soren and Zhang, Lingming},
+  title   = {Demystifying {LLM}-Based Software Engineering Agents},
+  journal = {Proceedings of the ACM on Software Engineering},
+  volume  = {2},
+  number  = {FSE},
+  pages   = {801--824},
+  year    = {2025},
+  doi     = {10.1145/3715754}
+}
+
+@inproceedings{elbaum2001cost,
+  author    = {Elbaum, Sebastian and Malishevsky, Alexey and Rothermel, Gregg},
+  title     = {Incorporating Varying Test Costs and Fault Severities into Test Case Prioritization},
+  booktitle = {Proceedings of the 23rd International Conference on Software Engineering (ICSE)},
+  address   = {Toronto, ON, Canada},
+  pages     = {329--338},
+  year      = {2001},
+  doi       = {10.1109/ICSE.2001.919106}
+}
+
+@inproceedings{antoniades2025swesearch,
+  author    = {Antoniades, Antonis and {\"O}rwall, Albert and Zhang, Kexun and Xie, Yuxi and Goyal, Anirudh and Wang, William},
+  title     = {{SWE-Search}: Enhancing Software Agents with Monte Carlo Tree Search and Iterative Refinement},
+  booktitle = {Proceedings of the 13th International Conference on Learning Representations (ICLR)},
+  address   = {Singapore},
+  year      = {2025},
+  note      = {arXiv:2410.20285}
+}
+
+@inproceedings{shinn2023reflexion,
+  author    = {Shinn, Noah and Cassano, Federico and Berman, Edward and Gopinath, Ashwin and Narasimhan, Karthik and Yao, Shunyu},
+  title     = {Reflexion: Language Agents with Verbal Reinforcement Learning},
+  booktitle = {Advances in Neural Information Processing Systems 36 (NeurIPS)},
+  address   = {New Orleans, LA, USA},
+  pages     = {8634--8652},
+  year      = {2023}
+}
+
+@article{kang2025autosd,
+  author  = {Kang, Sungmin and Chen, Bei and Yoo, Shin and Lou, Jian-Guang},
+  title   = {Explainable Automated Debugging via Large Language Model-Driven Scientific Debugging},
+  journal = {Empirical Software Engineering},
+  volume  = {30},
+  number  = {2},
+  year    = {2025},
+  doi     = {10.1007/s10664-024-10594-x}
+}
+
+@inproceedings{yin2024thinkrepair,
+  author    = {Yin, Xin and Ni, Chao and Wang, Shaohua and Li, Zhenhao and Zeng, Limin and Yang, Xiaohu},
+  title     = {{ThinkRepair}: Self-Directed Automated Program Repair},
+  booktitle = {Proceedings of the 33rd ACM SIGSOFT International Symposium on Software Testing and Analysis (ISSTA)},
+  address   = {Vienna, Austria},
+  pages     = {1274--1286},
+  year      = {2024},
+  doi       = {10.1145/3650212.3680359}
+}
+
+@article{chen2025sweexp,
+  author  = {Chen, Silin and Lin, Shaoxin and Shi, Yuling and Lian, Heng and Gu, Xiaodong and Yun, Longfei and Chen, Dong and Cao, Lin and Liu, Jiyang and Xia, Nu and Wang, Qianxiang},
+  title   = {{SWE-Exp}: Experience-Driven Software Issue Resolution},
+  journal = {arXiv preprint arXiv:2507.23361},
+  year    = {2025}
+}
+
+% ---------- additional sources used by Background and Experiments ----------
+
+@inproceedings{wu2024condefects,
+  author    = {Wu, Yonghao and Li, Zheng and Zhang, Jie M. and Liu, Yong},
+  title     = {{ConDefects}: A Complementary Dataset to Address the Data Leakage Concern for {LLM}-based Fault Localization and Program Repair},
+  booktitle = {Companion Proceedings of the 32nd ACM International Conference on the Foundations of Software Engineering (FSE)},
+  pages     = {642--646},
+  year      = {2024},
+  doi       = {10.1145/3663529.3663815}
+}
+
+@inproceedings{just2014defects4j,
+  author    = {Just, Ren{\'e} and Jalali, Darioush and Ernst, Michael D.},
+  title     = {{Defects4J}: A Database of Existing Faults to Enable Controlled Testing Studies for {Java} Programs},
+  booktitle = {Proceedings of the 23rd International Symposium on Software Testing and Analysis (ISSTA)},
+  pages     = {437--440},
+  year      = {2014},
+  doi       = {10.1145/2610384.2628055}
+}
+
+@article{rothermel2001prioritizing,
+  author  = {Rothermel, Gregg and Untch, Roland H. and Chu, Chengyun and Harrold, Mary Jean},
+  title   = {Prioritizing Test Cases for Regression Testing},
+  journal = {IEEE Transactions on Software Engineering},
+  volume  = {27},
+  number  = {10},
+  pages   = {929--948},
+  year    = {2001},
+  doi     = {10.1109/32.962562}
+}
+
+@article{lou2024aprregression,
+  author  = {Lou, Yiling and Yang, Jun and Benton, Samuel and Hao, Dan and Tan, Lin and Chen, Zhenpeng and Zhang, Lu and Zhang, Lingming},
+  title   = {When Automated Program Repair Meets Regression Testing---An Extensive Study on Two Million Patches},
+  journal = {ACM Transactions on Software Engineering and Methodology},
+  volume  = {33},
+  number  = {7},
+  year    = {2024},
+  doi     = {10.1145/3672450}
 }
 
 @article{legoues2019apr,
@@ -49,120 +227,6 @@
   year      = {2015},
   doi       = {10.1145/2771783.2771791}
 }
-
-% ---------- test-case prioritisation ----------
-
-@article{rothermel2001prioritizing,
-  author  = {Rothermel, Gregg and Untch, Roland H. and Chu, Chengyun and Harrold, Mary Jean},
-  title   = {Prioritizing Test Cases for Regression Testing},
-  journal = {IEEE Transactions on Software Engineering},
-  volume  = {27},
-  number  = {10},
-  pages   = {929--948},
-  year    = {2001},
-  doi     = {10.1109/32.962562}
-}
-
-@inproceedings{elbaum2001cost,
-  author    = {Elbaum, Sebastian and Malishevsky, Alexey and Rothermel, Gregg},
-  title     = {Incorporating Varying Test Costs and Fault Severities into Test Case Prioritization},
-  booktitle = {Proceedings of the 23rd International Conference on Software Engineering (ICSE)},
-  pages     = {329--338},
-  year      = {2001},
-  doi       = {10.1109/ICSE.2001.919106}
-}
-
-@incollection{lou2019survey,
-  author    = {Lou, Yiling and Chen, Junjie and Zhang, Lingming and Hao, Dan},
-  title     = {A Survey on Regression Test-Case Prioritization},
-  booktitle = {Advances in Computers},
-  editor    = {Memon, Atif},
-  volume    = {113},
-  chapter   = {1},
-  publisher = {Academic Press},
-  year      = {2019},
-  isbn      = {9780128160718}
-}
-
-% ---------- prioritisation inside a repair loop ----------
-
-@inproceedings{qi2013frtp,
-  author    = {Qi, Yuhua and Mao, Xiaoguang and Lei, Yan},
-  title     = {Efficient Automated Program Repair through Fault-Recorded Testing Prioritization},
-  booktitle = {Proceedings of the 29th IEEE International Conference on Software Maintenance (ICSM)},
-  pages     = {180--189},
-  year      = {2013},
-  doi       = {10.1109/ICSM.2013.29}
-}
-
-@article{venugopal2020mpp,
-  author  = {Venugopal, Yazhini and Quang-Ngoc, Phung and Eunseok, Lee},
-  title   = {Modification Point Aware Test Prioritization and Sampling to Improve Patch Validation in Automatic Program Repair},
-  journal = {Applied Sciences},
-  volume  = {10},
-  number  = {5},
-  pages   = {1593},
-  year    = {2020},
-  doi     = {10.3390/app10051593}
-}
-
-@article{lou2024aprregression,
-  author  = {Lou, Yiling and Yang, Jun and Benton, Samuel and Hao, Dan and Tan, Lin and Chen, Zhenpeng and Zhang, Lu and Zhang, Lingming},
-  title   = {When Automated Program Repair Meets Regression Testing---An Extensive Study on Two Million Patches},
-  journal = {ACM Transactions on Software Engineering and Methodology},
-  volume  = {33},
-  number  = {7},
-  pages   = {Article 180},
-  year    = {2024},
-  doi     = {10.1145/3672450}
-}
-
-% ---------- LLM-based repair ----------
-
-@inproceedings{xia2024chatrepair,
-  author    = {Xia, Chunqiu Steven and Zhang, Lingming},
-  title     = {Automated Program Repair via Conversation: Fixing 162 out of 337 Bugs for \$0.42 Each using {ChatGPT}},
-  booktitle = {Proceedings of the 33rd ACM SIGSOFT International Symposium on Software Testing and Analysis (ISSTA)},
-  pages     = {819--831},
-  year      = {2024},
-  doi       = {10.1145/3650212.3680323}
-}
-
-@article{hidvegi2024cigar,
-  author  = {Hidv{\'e}gi, D{\'a}vid and Etemadi, Khashayar and Bobadilla, Sofia and Monperrus, Martin},
-  title   = {{CigaR}: Cost-efficient Program Repair with {LLM}s},
-  journal = {arXiv preprint arXiv:2402.06598},
-  year    = {2024}
-}
-
-@article{chen2025conversational,
-  author  = {Chen, Aolin and Wu, Haojun and Xin, Qi and Reiss, Steven P. and Xuan, Jifeng},
-  title   = {Studying and Understanding the Effectiveness and Failures of Conversational {LLM}-Based Repair},
-  journal = {arXiv preprint arXiv:2503.15050},
-  year    = {2025}
-}
-
-% ---------- benchmarks ----------
-
-@inproceedings{just2014defects4j,
-  author    = {Just, Ren{\'e} and Jalali, Darioush and Ernst, Michael D.},
-  title     = {{Defects4J}: A Database of Existing Faults to Enable Controlled Testing Studies for {Java} Programs},
-  booktitle = {Proceedings of the 23rd International Symposium on Software Testing and Analysis (ISSTA)},
-  pages     = {437--440},
-  year      = {2014},
-  doi       = {10.1145/2610384.2628055}
-}
-
-@inproceedings{wu2024condefects,
-  author    = {Wu, Yonghao and Li, Zheng and Zhang, Jie M. and Liu, Yong},
-  title     = {{ConDefects}: A Complementary Dataset to Address the Data Leakage Concern for {LLM}-based Fault Localization and Program Repair},
-  booktitle = {Companion Proceedings of the 32nd ACM International Conference on the Foundations of Software Engineering (FSE)},
-  pages     = {642--646},
-  year      = {2024},
-  doi       = {10.1145/3663529.3663815}
-}
-
-% ---------- statistics ----------
 
 @article{jeffreys1946invariant,
   author  = {Jeffreys, Harold},

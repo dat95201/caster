@@ -1,258 +1,390 @@
-\chapter{Theoretical Background}
+\chapter{Background}
 \label{ch:background}
 
-This chapter sets out the formal objects the proposal manipulates: the repair
-loop and the two separate costs it incurs, the prioritisation strategies it
-inherits, the typed memory it starts from, the estimator it ranks by, and the
-accounting rules that make the measurement meaningful. Implementation specifics
-are deferred to Chapter~\ref{ch:framework}.
+This chapter builds up the objects the rest of the report uses, starting from
+plain definitions. Section~\ref{sec:bg-loop} defines the repair loop precisely.
+Section~\ref{sec:bg-cost} explains what validation costs, why the order in
+which tests run changes that cost, and why counting test runs is not the same as
+measuring time. Section~\ref{sec:bg-hypothesis} explains what a repair
+hypothesis is and why putting the whole history in the prompt does not stop the
+model repeating one.
 
-\section{The Repair Loop and Its Two Costs}
-\label{sec:loop}
+\section{Iterative LLM-Based Repair}
+\label{sec:bg-loop}
 
-Fix a faulty program $s_0$ and a finite \emph{pool} of test cases
-$P = \{x_1,\dots,x_n\}$. Each $x \in P$ carries a reference output, so a
-candidate program $s$ either agrees with the reference on $x$ or does not; in
-the latter case $x$ is said to \emph{refute} (or \emph{kill}) $s$.
+\subsection{The Objects}
 
-\begin{definition}[Repair episode]
-An episode with budget $B$ is the sequence, for $t = 1,\dots,B$: the proposer
-draws a candidate $s_t \sim \pi(\cdot \mid \mathcal{H}_{t-1})$ from its history
-$\mathcal{H}_{t-1}$; the oracle probes $s_t$ against cases from $P$ in some
-order and stops at the first refuting case; if no case refutes $s_t$ the
-episode \emph{accepts} and stops.
+Table~\ref{tab:terms} lists every term this report uses in a technical sense.
+Each is defined once here and used consistently afterwards.
+
+\begin{table}[htbp]
+\centering
+\caption{Terms used in this report.}
+\label{tab:terms}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} X@{}}
+\toprule
+Term & Meaning in this report\\
+\midrule
+Faulty program $s_0$ & The program that contains the bug.\\
+Test case $x$ & One input together with the output the program is expected to
+produce for it.\\
+Test pool $P$ & The finite set of test cases available for one task,
+$P = \{x_1,\dots,x_n\}$.\\
+Reject (or refute) & A test case \emph{rejects} a program when the program's
+output on that input differs from the expected output. One rejecting test is
+enough to prove the program wrong.\\
+Candidate patch $s$ & A modified program produced by the LLM in one iteration.\\
+Round (or iteration) & One pass of generate $\rightarrow$ validate
+$\rightarrow$ refine.\\
+Repair session & All rounds spent on one task, up to the budget $B$.\\
+Budget $B$ & The maximum number of rounds, that is, the maximum number of
+candidate patches, allowed per task.\\
+Scan & One validation: running a candidate against test cases from $P$ until
+one of them rejects it, or until all have passed.\\
+Plausible patch & A candidate that no test case in $P$ rejects. ``Plausible''
+rather than ``correct'' because passing a finite test pool is weaker than being
+right~\citep{qi2015plausibility}.\\
+Test-run cost $c(x)$ & The CPU time consumed by running one candidate on one
+test case $x$.\\
+Repair hypothesis & The idea behind a patch: what the model believes is wrong
+and how it intends to fix it. Many different patches can express one
+hypothesis.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{The Loop as a Formal Object}
+
+\begin{definition}[Repair session]
+\label{def:session}
+A repair session with budget $B$ on a faulty program $s_0$ and a test pool $P$
+is the following sequence, for $t = 1,2,\dots,B$:
+\begin{enumerate}[leftmargin=*,itemsep=2pt,topsep=3pt]
+  \item The LLM draws a candidate patch
+        $s_t \sim \pi(\cdot \mid \mathcal{H}_{t-1})$, where $\mathcal{H}_{t-1}$
+        is whatever the loop has chosen to put in the prompt from rounds
+        $1,\dots,t-1$.
+  \item The \emph{validator} runs $s_t$ against test cases from $P$ in some
+        order $\sigma_t$, stopping at the first test case that rejects $s_t$.
+  \item If no test case rejects $s_t$, the session \emph{accepts} $s_t$ and
+        stops. Otherwise the rejecting test case, together with whatever else
+        the loop chooses to carry, becomes part of $\mathcal{H}_t$, and the next
+        round begins.
+\end{enumerate}
 \end{definition}
 
-The episode spends two different resources, and conflating them is the error
-this proposal is organised around.
+Two choices are left open by Definition~\ref{def:session}, and they are exactly
+the two levers of this work. The order $\sigma_t$ is free, and nothing in the
+definition says it must be the order the benchmark happens to ship. The contents
+of $\mathcal{H}_t$ are free, and nothing says they must be the full transcript.
 
-\begin{itemize}[leftmargin=*]
-\item \textbf{Proposer cost}, paid in model tokens and therefore in money. This
-is what \textsc{CigaR} optimises, reporting $127$K tokens per bug against a
-$467$K baseline~\citep{hidvegi2024cigar}.
-\item \textbf{Oracle cost}, paid in CPU seconds executing candidate programs.
-This is what \frtp~\citep{qi2013frtp} and this proposal optimise.
+\subsection{The Two Bills}
+
+A repair session spends two different resources, and keeping them apart matters
+because optimising one can increase the other.
+
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+\item \textbf{The generation bill}, paid in model tokens and therefore in money
+or in GPU time. It grows with the number of rounds and with the size of the
+prompt.
+\item \textbf{The validation bill}, paid in CPU seconds spent executing
+candidate programs. It grows with the number of rounds, with how many test cases
+each scan runs, and with how expensive those particular test cases are.
 \end{itemize}
 
-Writing $c(x)$ for the CPU cost of one probe on case $x$ and $\sigma_t$ for the
-order the oracle uses in round $t$, the oracle cost of the episode is
+This report targets the validation bill with its scheduler and the generation
+bill with its hints, and reports both.
+
+\section{Validation Cost and Test Ordering}
+\label{sec:bg-cost}
+
+\subsection{What a Session Costs}
+
+Write $c(x)$ for the CPU cost of running one candidate on test case $x$, and
+$\sigma_t$ for the order the validator uses in round $t$, so that
+$\sigma_t(j)$ is the $j$-th test case it runs. The validation cost of a session
+is
 \begin{equation}
 C \;=\; \sum_{t=1}^{T} \; \sum_{j=1}^{r_t} c\!\left(\sigma_t(j)\right),
 \qquad
-r_t \;=\; \min\{\, j : \sigma_t(j) \text{ refutes } s_t \,\},
-\label{eq:oracle-cost}
+r_t \;=\; \min\{\, j \;:\; \sigma_t(j) \text{ rejects } s_t \,\},
+\label{eq:cost}
 \end{equation}
-with $r_t = n$ when nothing refutes. Two facts about
-Equation~\eqref{eq:oracle-cost} drive the whole design. First, the order
-$\sigma_t$ is free to choose and is the only term the scheduler controls.
-Second, minimising the \emph{number} of probes $\sum_t r_t$ is not the same
-objective as minimising $C$ unless $c$ is constant --- and
-Section~\ref{sec:pilot-arena} shows it is very far from constant.
+where $T$ is the number of rounds actually run and $r_t = |P|$ when nothing
+rejects $s_t$. Two observations about Equation~\eqref{eq:cost} drive the whole
+design.
+
+First, $\sigma_t$ is the only term the validator controls. The candidate comes
+from the model, the pool comes from the benchmark, and the per-test costs are
+properties of the programs; the order is a free choice made on every round.
+
+Second, minimising the \emph{number} of test runs $\sum_t r_t$ is the same
+objective as minimising $C$ \textbf{only if $c$ is constant}. When test costs
+differ, a schedule can run more tests and still finish sooner, or run fewer
+tests and take longer. The two quantities can therefore rank two schedules in
+opposite orders.
+
+\subsection{Why Executions and Seconds Are Not Interchangeable}
+
+The test-prioritisation literature usually reports the number of test
+executions rather than elapsed time, and does so for a defensible reason. The
+largest study of patch validation to date measures executions precisely because
+elapsed time is unstable across machines and configurations, where an execution
+count reproduces~\citep{lou2024aprregression}. That choice is sound when
+executions are interchangeable --- when running any one test costs about as
+much as running any other.
+
+It stops being sound when they are not. In the setting studied here, a test case
+is one whole-program execution on one input, and inputs within a single task's
+pool differ by orders of magnitude in size and in the amount of work they
+provoke. A deployment pays for seconds, not for executions, so a result reported
+only in executions does not tell the deployment what it will pay. This is why
+Chapter~\ref{ch:experiments} makes CPU seconds the primary unit and reports
+executions alongside rather than instead.
+
+\subsection{Order Changes the Cost but Not the Answer}
 
 \begin{definition}[Soundness of a schedule]
 \label{def:soundness}
-A patch is accepted only after surviving every usable case in $P$. Acceptance
-is therefore independent of $\sigma_t$: no ordering can accept a patch that
-another ordering rejects.
+A candidate is accepted only after surviving \emph{every} usable test case in
+$P$. Acceptance is therefore independent of the order $\sigma_t$: no ordering
+can accept a patch that another ordering rejects, and no ordering can reject a
+patch that another ordering accepts.
 \end{definition}
 
-Definition~\ref{def:soundness} is what makes a pure cost claim possible. Any
-difference in repair rate between two scheduling policies is a bug, not a
-finding, and Section~\ref{sec:soundness} reports the check.
+Definition~\ref{def:soundness} is what makes a pure cost claim possible. If two
+schedules repaired different numbers of bugs, the difference would be an
+implementation bug rather than a finding, so the experiment asserts the
+equality rather than reporting it (Section~\ref{sec:exp-metrics}).
 
-\section{Test-Case Prioritisation}
-\label{sec:tcp}
+\subsection{Test-Case Prioritisation}
 
-\citet{rothermel2001prioritizing} formalised prioritisation as the search for a
-permutation of $P$ maximising a rate-of-detection award function, and
-introduced the two greedy families still in use. \emph{Total} strategies rank
-$x$ by a static property --- usually $|\mathrm{cov}(x)|$, the set of statements
-it exercises. \emph{Additional} strategies rank by the marginal gain
-\begin{equation}
-g(x \mid \mathcal{C}) \;=\; \bigl|\mathrm{cov}(x) \setminus \mathcal{C}\bigr| ,
-\label{eq:additional}
-\end{equation}
-where $\mathcal{C}$ is what the already-scheduled prefix covers, re-ranking
-after every pick. The additional family ($\mathrm{RTP_{add}}$) is the stronger
-of the two in most empirical comparisons and is the one carried into this study
-as the \code{coverage} arm.
+The problem of choosing $\sigma_t$ is an instance of \emph{test-case
+prioritisation}, studied for decades in regression testing.
+\citet{rothermel2001prioritizing} formalised it as the search for a permutation
+of the test pool that maximises how quickly faults are detected, and introduced
+the two greedy families still in use:
 
-\citet{elbaum2001cost} noted that the standard award function assumes uniform
-test costs and fault severities, and proposed a cost-cognizant variant. That
-observation is the ancestor of the denominator in \km. The difference is that
-their cost is an input; here it is a statistic the loop accumulates about
-itself.
+\begin{itemize}[leftmargin=*,itemsep=3pt]
+\item \textbf{Total} strategies rank a test case by a static property, usually
+how many lines of the program it exercises.
+\item \textbf{Additional} strategies rank by \emph{marginal} gain: how many
+lines it exercises that nothing scheduled so far has exercised, re-ranking after
+every pick. This family, written $\mathrm{RTP_{add}}$, is the stronger of the
+two in most empirical comparisons and is used in this report as a classical
+baseline.
+\end{itemize}
 
-\section{Fault-Recorded Prioritisation and What It Discards}
-\label{sec:frtp}
+\citet{elbaum2001cost} observed that the standard metric for prioritisation
+assumes uniform test costs, and proposed a cost-cognizant replacement. That
+paper is the ancestor of the cost term in this work. What it did not have is an
+\emph{online} cost estimate: its costs are supplied before the run, whereas a
+repair loop can measure them as it goes, for free, because it is running the
+tests anyway.
 
-\frtp~\citep{qi2013frtp} ranks each case by its \emph{failing count}: the
-number of candidate patches it has already falsified. The information is free,
-because the repair loop produces it as a by-product. Writing $k(x)$ for that
-count, \frtp\ schedules in decreasing $k$.
+\subsection{What \texorpdfstring{\frtp}{FRTP} Records and What It Discards}
+\label{sec:bg-frtp}
 
-Two things are missing from $k$, and naming them precisely is what generates
-this proposal's score function.
+\frtp~\citep{qi2013frtp} is the direct baseline for the scheduling half of this
+work. It ranks each test case by its \emph{failing count}: the number of
+candidate patches that test case has already rejected during this repair
+session. The information is free, because the repair loop produces it as a
+by-product, which is why \frtp's overhead is negligible.
 
-\paragraph{The denominator.} Let $n(x)$ be the number of times $x$ has been
-\emph{run}. A count $k(x)$ without $n(x)$ cannot distinguish a case that was
-run ten times and refuted nothing from a case that was never run: both have
-$k = 0$. The ratio $k(x)/n(x)$ is the first quantity that reads the evidence of
-\emph{not} killing, and it is also the first that lets a case whose early
-record was luck decay back towards the population mean.
+Writing $k(x)$ for that count, \frtp\ schedules in decreasing $k$. Two things
+are missing from $k$, and naming them precisely is what produces this work's
+scheduling rule.
 
-\paragraph{The cost.} Nothing in $k$ knows that one probe takes
-0.01\,s and another 7.5\,s. Under a uniform-cost
-assumption that is harmless. Section~\ref{sec:pilot-arena} measures the
-assumption and finds it false by nearly two orders of magnitude, and ---
-worse --- finds that cost and kill rate are \emph{positively} correlated within
-a task, so a policy that maximises kill probability is systematically drawn
-towards the expensive end of the pool.
+Figure~\ref{fig:frtp-gaps} makes both gaps concrete on four tests.
 
-\section{The Premise: \texorpdfstring{\cegmem}{CEGMem}'s Typed Memory}
-\label{sec:cegmem-premise}
-
-The immediate predecessor of this work is \cegmem, a counterexample-guided
-repair loop with a memory of refuted attempts. Its central object is a
-\emph{failure type} function
-\begin{equation}
-\theta(s) \;=\; \bigl(\underbrace{\ell(s_0, s)}_{\text{edit location}},\;
-                      \underbrace{\varphi(s)}_{\text{violated property}}\bigr),
-\label{eq:theta}
-\end{equation}
-where $\ell$ is computed by diffing the candidate against the \emph{faulty}
-source it started from --- never against the reference --- and $\varphi$ is the
-exception class, a timeout, or a shape of output divergence. Two granularities
-ship: a coarse one whose location is always \code{whole\_program}, and a fine
-one whose location is the changed line range \code{L}$a$--\code{L}$b$, falling
-back to a \code{wholesale} tag when the edit is too large or too scattered to
-name one place. Because $\ell$ is a pure diff, it is computable on a fresh
-candidate \emph{before} any sandbox run, which is what lets the memory act as a
-guard.
-
-The study ran $309$ ConDefects tasks $\times$ $5$ seeds at budget $20$
-($1{,}545$ cells per arm) with \code{gpt-4o-mini}, comparing three memory
-conditions. Table~\ref{tab:cegmem} gives the result.
-
-\begin{table}[H]
+\begin{figure}[htbp]
 \centering
-\caption{\cegmem\ main grid: $309$ tasks, $5$ seeds, budget $20$,
-$1{,}545$ paired cells per arm, \code{gpt-4o-mini}. Per-episode means.}
-\label{tab:cegmem}
-\small
-\begin{tabular}{@{}l r r r r r@{}}
-\toprule
-Arm & Repair rate & Oracle calls & Sandbox runs & Guard (s) & Prompt tokens\\
-\midrule
-no memory        & 0.5262 & 11.1094 & 92.58 & 0.00  & 5{,}365\\
-untyped memory   & 0.5256 & 1.4615  & 38.15 & 14.50 & 5{,}370\\
-\textbf{typed memory} & \textbf{0.5812} & \textbf{1.5709} & 39.47 & 14.15 & 7{,}005\\
-\bottomrule
-\end{tabular}
-\end{table}
+\resizebox{0.95\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  lbl/.style={font=\small,anchor=west},
+  hdr/.style={font=\small\bfseries,anchor=west},
+  num/.style={font=\small,anchor=east},
+  note/.style={font=\scriptsize\itshape,anchor=west,text=pendred,text width=44mm},
+  grey/.style={font=\scriptsize\itshape,anchor=west,text=black!55},
+  track/.style={draw=black!45,fill=black!6},
+  kfill/.style={draw=bkblue!70,fill=bkblue!50},
+  cost/.style={draw=black!45,fill=black!30}
+]
+\def\rw{0.09}   % units per run
+\def\cs{0.90}   % units per CPU second
 
-Typed memory beat untyped on repair rate by a wide margin --- $144$ cells
-flipped to success against $58$ the other way, $p = 1.3\times10^{-9}$ --- and
-both memories cut oracle calls by about $7\times$ against no memory at all. The
-index behaved as designed: over $23{,}975$ guarded rounds the type-matched
-bucket was non-empty $59.4\,\%$ of the time, and when it was, a stored
-counterexample still refuted the new candidate $97.6\,\%$ of the time.
+% ---- header ----
+\node[hdr] at (0,0.85)  {test};
+\node[hdr] at (1.3,0.85){runs ($k$ filled)};
+\node[num,font=\small\bfseries] at (5.0,0.85){$k$};
+\node[num,font=\small\bfseries] at (5.9,0.85){$n$};
+\node[num,font=\small\bfseries] at (7.3,0.85){$K$};
+\node[hdr] at (7.9,0.85){cost};
+\draw[black!40] (0,0.58) -- (17.2,0.58);
 
-\paragraph{What that study left open, and why this one exists.} Read the
-columns in the right order and the residual is obvious. The memory removed
-$86\,\%$ of oracle \emph{calls}, but sandbox \emph{runs} fell only from
-$92.6$ to $39.5$ --- a factor of $2.35$, not $7$ --- and the guard itself
-consumed 14.15\,s per episode. The reason is structural. A
-class-keyed index decides \emph{whether} to pay the oracle; once the decision
-is ``pay'', the oracle still walks the pool in whatever order the benchmark
-shipped. Nothing in $\theta$ is a test case, so nothing in $\theta$ can order
-one.
+% ---- T1 ----
+\node[lbl] at (0,0.2) {$T_1$};
+\draw[track] (1.3,0.05) rectangle ++({10*\rw},0.3);
+\draw[kfill] (1.3,0.05) rectangle ++({8*\rw},0.3);
+\node[num] at (5.0,0.2){8}; \node[num] at (5.9,0.2){10}; \node[num] at (7.3,0.2){0.80};
+\draw[cost] (7.9,0.05) rectangle ++({0.05*\cs},0.3);
+\node[lbl] at (9.4,0.2){0.05\,s};
 
-A second residual is on the proposer side. Typed steering cut the duplicate
-patch rate only from $0.2653$ to $0.2358$, and it did so while growing the
-prompt by a factor of $1.30$. The steering was phrased as a prohibition ---
-``this class of edit has been eliminated'' --- because a class is a category
-and a category can only be forbidden. That framing is also known to misfire:
-in \cegmem's own measurements a failure class the model would otherwise emit
-$5.4\,\%$ of the time was emitted $14.7\,\%$ of the time once the prompt named
-it, a $2.7\times$ priming inversion. A test case, being an observation, can
-instead be stated as a requirement to satisfy, which is the hypothesis RQ3
-tests.
+% ---- T2 ----
+\node[lbl] at (0,-0.7) {$T_2$};
+\draw[track] (1.3,-0.85) rectangle ++({30*\rw},0.3);
+\draw[kfill] (1.3,-0.85) rectangle ++({8*\rw},0.3);
+\node[num] at (5.0,-0.7){8}; \node[num] at (5.9,-0.7){30}; \node[num] at (7.3,-0.7){0.27};
+\draw[cost] (7.9,-0.85) rectangle ++({1.5*\cs},0.3);
+\node[lbl] at (9.4,-0.7){1.50\,s};
 
-\section{The \texorpdfstring{\km}{K/m} Index}
-\label{sec:index}
+% ---- T3 ----
+\node[lbl] at (0,-1.6) {$T_3$};
+\draw[track] (1.3,-1.75) rectangle ++({20*\rw},0.3);
+\node[num] at (5.0,-1.6){0}; \node[num] at (5.9,-1.6){20}; \node[num] at (7.3,-1.6){0.00};
+\draw[cost] (7.9,-1.75) rectangle ++({0.05*\cs},0.3);
+\node[lbl] at (9.4,-1.6){0.05\,s};
 
-Give every case $x$ two online statistics maintained by the loop: $n(x)$, the
-number of times $x$ has been run, and $k(x)$, the number of those runs that
-refuted the candidate. Treat the per-case kill probability as a Bernoulli
-parameter with a Beta conjugate prior, so that the posterior mean is
-\begin{equation}
-K(x) \;=\; \frac{k(x) + \alpha}{n(x) + \alpha + \beta}.
-\label{eq:K}
-\end{equation}
-Two priors ship. Jeffreys' invariant prior $\mathrm{Beta}(\tfrac12,\tfrac12)$
-\citep{jeffreys1946invariant} is the standard non-informative choice, but it
-places an unseen case at $K = 0.5$, which outranks a proven refuter whose
-record has decayed --- $k=2, n=10$ gives $K = 0.227$ --- and under homogeneous
-costs that degenerates into a full-pool sweep. The default is therefore
-$\mathrm{Beta}(\tfrac12, 2)$, prior mean $0.2$: above this corpus's base rate
-and below one half. Exploration is handled explicitly by an
-$\varepsilon$-greedy term rather than smuggled into the prior.
+% ---- T4 ----
+\node[lbl] at (0,-2.5) {$T_4$};
+\node[grey] at (1.3,-2.5){never run};
+\node[num] at (5.0,-2.5){0}; \node[num] at (5.9,-2.5){0}; \node[num] at (7.3,-2.5){---};
+\node[grey] at (7.9,-2.5){unknown};
 
-Let $\hat{m}(x)$ be the running mean CPU cost of the probes actually paid on
-$x$, with an unseen case taking the cold-start value defined in
-Section~\ref{sec:ledger}. The schedule ranks by
-\begin{equation}
-\mathrm{score}(x) \;=\; \frac{K(x)}{\hat{m}(x)^{\,c}},
-\qquad c \ge 0,
-\label{eq:score}
-\end{equation}
-where $c = 1$ recovers the plain ratio \km, $c = 0$ recovers a pure kill-rate
-policy, and intermediate $c$ interpolates. Section~\ref{sec:pilot-sweep}
-measures the exponent rather than assuming it.
+% ---- the two gaps, bracketed on the right ----
+\draw[pendred,thick] (11.2,0.2) -- (11.5,0.2) -- (11.5,-0.7) -- (11.2,-0.7);
+\node[note] at (11.65,-0.25)
+  {same $k$, so a count cannot order them --- yet $T_2$ rejects far less often
+   \emph{and} costs $30\times$ more};
+\draw[pendred,thick] (11.2,-1.6) -- (11.5,-1.6) -- (11.5,-2.5) -- (11.2,-2.5);
+\node[note] at (11.65,-2.05)
+  {same $k$ again --- but $T_3$ has $20$ runs of evidence and $T_4$ has none};
 
-The intuition is a rate of return: $K(x)$ is the probability that spending
-$\hat m(x)$ seconds ends the round, so $K/\hat{m}$ is expected refutations per
-CPU second, and greedily taking the highest-return probe first is the natural
-heuristic for Equation~\eqref{eq:oracle-cost}. Two properties keep it honest.
-The order is built \emph{once} per round from the ledger as it stood when the
-round began, so nothing is re-ranked mid-round; and only probes actually
-\emph{paid} update $n$, while only the refuting probe updates $k$.
+% ---- the three resulting orders ----
+\draw[black!40] (0,-3.05) -- (17.2,-3.05);
+\node[hdr] at (0,-3.5) {ranked by count $k$ \;(\frtp)};
+\node[lbl] at (5.9,-3.5) {$\{T_1,T_2\}$ tied, then $\{T_3,T_4\}$ tied};
+\node[note,text width=50mm] at (11.65,-3.5) {two ties, both hiding something};
+\node[hdr] at (0,-4.15){ranked by rate $K$};
+\node[lbl] at (5.9,-4.15){$T_1 \succ T_2 \succ T_4 \succ T_3$};
+\node[grey] at (11.65,-4.15){ties broken; $T_3$ now ranks last};
+\node[hdr] at (0,-4.8) {ranked by rate $\div$ cost};
+\node[lbl] at (5.9,-4.8) {$T_1\,(16.0)\;\gg\;T_2\,(0.18)$};
+\node[grey] at (11.65,-4.8){$T_2$ demoted by $90\times$};
+\end{tikzpicture}}
+\caption[Why a count of rejections is not enough]{The two things a rejection
+count leaves out, on four tests. $T_1$ and $T_2$ have rejected the same number
+of patches, so \frtp\ cannot order them --- yet $T_1$ rejects four candidates
+in five and $T_2$ roughly one in four, and $T_2$ costs thirty times as much to
+run. $T_3$ and $T_4$ also tie at zero, although $T_3$ has twenty runs of
+evidence that it never rejects and $T_4$ has none. Reading the denominator
+breaks both ties; dividing by cost then demotes the expensive test.}
+\label{fig:frtp-gaps}
+\end{figure}
 
-\section{Cost Accounting}
-\label{sec:accounting}
+\paragraph{The denominator is missing.} Let $n(x)$ be the number of times test
+case $x$ has been \emph{run}. A count $k(x)$ without $n(x)$ cannot distinguish a
+test case that was run ten times and rejected nothing from a test case that was
+never run at all: both have $k = 0$. The ratio $k(x)/n(x)$ is the first quantity
+that reads the evidence of \emph{not} rejecting, and it is also the first that
+lets a test case whose early record was luck decay back towards the average.
 
-Three rules govern every number reported in this proposal, and each exists
-because violating it produces a plausible wrong answer rather than an error.
+\paragraph{The cost is missing.} Nothing in $k$ knows that one test runs in
+milliseconds and another takes seconds. Under a uniform-cost assumption that is
+harmless. When costs are spread out it is not, and it is worse than neutral if
+expensive tests also tend to be more discriminating --- in that case ranking on
+rejections alone actively steers the schedule towards the expensive end of the
+pool.
+
+\section{Repair Hypotheses and History in the Prompt}
+\label{sec:bg-hypothesis}
+
+\subsection{Patches Versus Hypotheses}
+
+A \emph{repair hypothesis} is the idea behind a patch: what the model believes
+is wrong, and how it intends to fix it --- ``the loop bound is off by one'',
+``the sort key should be the second field'', ``integer division should be float
+division''. One hypothesis can be written as many different patches, differing
+in variable names, in statement order, or in whitespace.
+
+This distinction matters for measurement. A \emph{duplicate} patch, in the sense
+used by \citet{chen2025conversational}, is a candidate whose normalised text has
+already been generated in this session. Two candidates that are textually
+different but express the same hypothesis are not duplicates by that definition,
+yet they are just as wasteful: both must be validated, and both fail for the
+same reason. The duplicate rate is therefore a \emph{lower bound} on the
+redundancy a repair loop actually produces, which is the sense in which the
+reported $65\,\%$ for \textsc{ChatRepair} is a conservative figure.
+
+\subsection{Why Showing the History Is Not Enough}
+
+The natural fix for redundancy is to show the model what it has already tried.
+Three published observations say this is necessary but not sufficient.
 
 \begin{enumerate}[leftmargin=*,itemsep=4pt]
-\item \textbf{CPU time, not wall clock.} Cost is the delta of
-\code{getrusage(RUSAGE\_CHILDREN)} across the probe. Wall clock is
-contaminated by sibling processes, which would make $\hat{m}$ a function of
-machine load; since the measurement runs several workers in parallel, using
-wall clock would make the learned cost model an artefact of the harness.
-\item \textbf{Executions reported alongside, never instead.} The prioritisation
-literature reports executions for reproducibility~\citep{lou2024aprregression},
-so both units are reported for every arm --- and
-Section~\ref{sec:pilot-measured} shows why that matters.
-\item \textbf{Timeouts are quarantined.} A contest solution can exceed the
-clock by being correct but slow, so a timeout is weaker evidence than a wrong
-answer; timed-out cases are excluded from the cost model rather than entered at
-the timeout value, which would otherwise dominate $\hat{m}$.
+\item \textbf{A transcript does not prevent repetition.}
+\textsc{ChatRepair}~\citep{xia2024chatrepair} keeps earlier incorrect patches
+and their failures in the conversation, and
+\citet{chen2025conversational} still measured $65\,\%$ of its generated patches
+to be duplicates.
+\item \textbf{Refinement preserves a bad hypothesis.} When the underlying
+hypothesis is wrong, feedback-driven refinement tends to produce superficial
+variants of the same idea rather than a new idea~\citep{le2026semantic}. The
+loop then pays for a new validation that was predictable in advance.
+\item \textbf{More context can hurt.} \citet{parasaram2025factselection} found
+that repair effectiveness is \emph{non-monotonic} in the number of facts placed
+in the prompt: past a point, adding more true and relevant information makes
+repair worse. A transcript grows monotonically, so it necessarily walks past
+that point in a long session.
 \end{enumerate}
 
-\section{Benchmark Infrastructure}
-\label{sec:benchmark}
+Taken together these say the problem is not the \emph{absence} of history but
+its \emph{form}. A growing transcript is the worst of both: it costs tokens on
+every round, it dilutes the few facts that matter, and it still leaves the model
+free to re-propose.
+
+\subsection{What a Hint Has to Be}
+
+Two properties distinguish a useful hint from a transcript line.
+
+\paragraph{It must be an observation, not a category.} A failure class --- ``the
+off-by-one family'' --- can only be phrased as a prohibition: \emph{do not do
+that again}. A concrete test case can be phrased as a positive requirement:
+\emph{on this input, produce exactly this output}. A requirement tells the model
+what success looks like; a prohibition only removes one option out of many and
+leaves the model to guess the rest. This is also why the scheduler and the hint
+contract are one system in \caster: the scheduler's unit of memory is the test
+case, and the test case is precisely the object that can be stated as a
+requirement.
+
+\paragraph{It must be selected, not accumulated.} Because effectiveness is
+non-monotonic in prompt content~\citep{parasaram2025factselection}, the right
+number of hints is small and roughly constant, not growing. Which hints those
+are changes from round to round, because the history changes. Selection must
+therefore happen at every iteration, which is what separates this approach from
+selecting static facts once before generation begins.
+
+\section{Benchmark Background}
+\label{sec:bg-benchmark}
 
 ConDefects~\citep{wu2024condefects} collects real faulty submissions from
-AtCoder contests together with the same author's accepted version and the
-contest's own test data: $1{,}254$ Java and $1{,}625$ Python faulty programs.
-It was built to address data leakage in LLM evaluation, since its faults
-post-date the training cut-offs of the models commonly benchmarked on
-Defects4J~\citep{just2014defects4j}. Three of its properties matter here.
-Every test input ships with the output the judge accepted, so a refutation is a
-concrete input/output pair rather than a pass/fail bit --- which is what makes
-a counterexample expressible as a positive requirement. A submission carries no
-problem statement, so every prompt must supply worked examples, identically in
-every condition. And the reference implementation is visible to the oracle only
-and never enters a prompt.
+AtCoder programming contests, together with the author's later accepted version
+and the contest's own test data: $1{,}254$ Java and $1{,}625$ Python faulty
+programs. It was built to address data leakage in LLM evaluation, since its
+faults post-date the training cut-offs of the models commonly benchmarked on
+Defects4J~\citep{just2014defects4j}.
+
+Four of its properties matter here. Every test input ships with its expected
+output, so a rejection is a concrete input/output pair rather than a pass/fail
+bit --- which is what lets a hint be stated as a positive requirement. A test
+is one whole-program execution, so there is no call graph and nothing to
+\emph{select away}; prioritisation is the only scheduling lever, which is the
+structural reason the ``selection beats prioritisation'' finding of
+\citet{lou2024aprregression} does not transfer here. Contest setters ship small
+public samples alongside large adversarial inputs, so a single task's pool
+spans a wide range of execution costs --- the spread a cost-aware schedule
+needs. And a submission carries no problem statement, so every prompt must
+supply worked examples, identically in every configuration, or the comparison
+measures prompt content rather than policy.

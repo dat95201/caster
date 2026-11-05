@@ -1,217 +1,193 @@
 \chapter{Introduction}
 \label{ch:intro}
 
-\section{Problem Statement}
-\label{sec:problem}
+\section{The Repair Loop}
+\label{sec:intro-loop}
 
-Automated program repair (APR) has converged on a loop with two halves. A
-\emph{proposer} produces a candidate patch, and an \emph{oracle} decides
-whether that candidate is wrong by running it against a pool of test cases and
-looking for one on which it misbehaves~\citep{legoues2019apr}. In the
-generate-and-validate tradition the proposer was a mutation
-operator~\citep{legoues2012genprog}; today it is usually a large language
-model~\citep{xia2024chatrepair}. The oracle has not changed: it is still a
-sequence of program executions, and it is still the half that burns the
-machine.
+A \emph{bug} is a place where a program does the wrong thing. A \emph{test case}
+is one concrete check: an input, and the output the program is supposed to
+produce for it. A \emph{test suite} is a collection of such checks, and a
+\emph{patch} is an edit to the program that is meant to make the failing checks
+pass. \emph{Automated program repair} (APR) is the task of producing such a
+patch without a human writing it~\citep{legoues2019apr}.
 
-How much it burns is easy to under-estimate, because the usual unit of account
-hides it. The test-prioritisation literature reports \emph{test executions}
-rather than time, and does so deliberately: the largest recent study of patch
-validation states that it presents results in executions because ``the number
-of test executions is more stable and more suitable for future work to
-reproduce''~\citep{lou2024aprregression}. That choice is sound when executions
-are interchangeable. On the corpus studied in this proposal they are not. The
-oracle's own reference program takes a median of 0.076\,s of CPU on
-one test case and 4.48\,s at the 99th percentile --- a $58.7\times$
-spread --- and the variation is not between easy and hard \emph{tasks} but
-inside a single task's pool, where the median coefficient of variation of
-per-case cost is $0.571$. Counting executions on such a pool is counting apples
-and buses.
+In APR based on large language models (LLMs), one design dominates: an iterative
+\emph{generate--validate--refine} loop. Given a buggy program and its failing
+tests, the LLM generates a candidate patch for the suspicious code. The patch is
+then \emph{validated} by running the test suite against it. If validation fails,
+the resulting feedback --- the failing test cases, the error message, or the
+stack trace --- is fed back to the model so that it can refine the patch, and
+the loop repeats. It stops when a patch passes all tests, which makes it
+\emph{plausible}, or when the iteration budget is exhausted.
+Figure~\ref{fig:apr-loop} shows the arrangement.
 
-The consequence shows up directly in the loop. A repair loop that walks the
-pool in the order the benchmark happens to ship --- which is what any
-implementation gets for free, and therefore what most implementations do ---
-spends 2.18\,s of oracle CPU per round and keeps spending it: the
-cost per round is flat from round~1 to round~20, because nothing in the loop
-learns anything about the pool. Over the $6{,}800$ rounds measured in
-Section~\ref{sec:pilot} that order costs 14843\,s of CPU where a
-scheduled order costs 3532\,s.
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  node distance=10mm and 14mm,
+  box/.style={draw=bkblue,fill=bkblue!6,rounded corners=2pt,align=center,
+              inner sep=6pt,font=\small,minimum height=12mm,text width=27mm},
+  small/.style={font=\scriptsize,align=center},
+  arr/.style={-{Stealth[length=2.4mm]},draw=black!70,thick}
+]
+\node[box] (bug) {Buggy program\\ + test suite};
+\node[box,right=of bug] (gen) {\textbf{Generate}\\ LLM proposes\\ a patch};
+\node[box,right=of gen] (val) {\textbf{Validate}\\ run the tests\\ on the patch};
+\node[box,right=of val] (done) {Plausible patch\\ (all tests pass)};
 
-Two kinds of memory have been proposed to make the loop cheaper, and neither
-addresses this. \emph{Fault-recorded testing prioritisation} (\frtp)
-ranks a test case by the number of patches it has already
-falsified~\citep{qi2013frtp}; the same quantity, under the name ``patch killing
-count'', drives later variants~\citep{venugopal2020mpp}. \cegmem, the study
-that precedes this one, went further and stored every refuted patch under a
-\emph{failure type} formed from the patch's edit location and the property it
-violated, so that a fresh candidate matching a stored type could be rejected
-before the oracle was paid at all. That worked: it cut oracle calls per
-episode from $11.11$ to $1.57$, a factor of $7.07$
-(Section~\ref{sec:cegmem-premise}).
+\draw[arr] (bug) -- (gen);
+\draw[arr] (gen) -- (val);
+\draw[arr] (val) -- node[small,above]{pass} (done);
 
-But both memories are keyed by a \emph{class}, and a class-keyed memory answers
-only one of the two questions a repair loop asks. It can answer \emph{which
-patches are not worth testing}. It cannot answer \emph{which test to run
-first}, and it certainly cannot answer \emph{which test is cheap} --- \frtp's
-whole family records that a case killed, never what the kill cost, and never
-the evidence of a case failing to kill, which is the information that
-distinguishes a case that spared ten patches from one that was never run. In
-\cegmem\ the residual was plainly visible: the memory removed most oracle
-\emph{calls}, yet the loop still performed $39.5$ sandbox executions per
-episode and still spent 14.1\,s per episode inside the guard,
-because every surviving call still walked the pool in alphabetical order.
+\coordinate (below) at ($(val.south)+(0,-11mm)$);
+\draw[arr] (val.south) -- (below)
+      -- node[small,below]{\textbf{Refine:} failing test, error message, stack trace}
+      ($(gen.south)+(0,-11mm)$) -- (gen.south);
+\end{tikzpicture}}
+\caption{The iterative generate--validate--refine loop used by most LLM-based
+repair systems. Validation is the step inside the cycle, so its cost is paid
+once per candidate patch rather than once per bug.}
+\label{fig:apr-loop}
+\end{figure}
 
-This proposal targets that residual. The idea is to key the memory by
-\textbf{test case} instead of by failure class, to learn two online quantities
-per case --- a kill rate and a cost --- and to schedule probes by their ratio.
-Keying on the case has a second consequence that motivates the rest of the
-design: a test case is an \emph{observation}, and only an observation can be
-handed back to the proposer as a positive requirement (``produce exactly this
-output on this input'') rather than as a prohibition (``do not do that
-again''). The scheduler and the prompt contract are therefore one system, and
-they ship together.
+\section{Two Problems with Current Practice}
+\label{sec:intro-problems}
 
-\section{Research Objectives and Questions}
-\label{sec:rq}
+Current practice reveals two issues with this loop.
 
-This research aims to design, implement and evaluate a repair loop whose
-memory of refuted attempts is indexed by test case, and to establish how much
-of the oracle's cost that indexing removes. Four objectives structure the
-work; each is paired with the question it answers and, following the discipline
-adopted throughout this project, with the outcome that would \emph{refute} it.
-A question with no refuting outcome is a name for a group of experiments, not a
-question.
+\paragraph{Validation is the most repeated and the most expensive step.}
+Each candidate patch must be built and executed against the test suite before
+its correctness can be judged, and this check is repeated for every candidate
+the LLM produces. \citet{lin2026torun} analysed $7{,}745$ agent traces from
+SWE-bench leaderboard submissions and found that every agent and model examined
+relies on code execution, averaging $8.8$ test runs per task, with frequency
+varying widely from $2$ to $19$ runs per task across agents and models. Each of
+these runs is costly: \textsc{RepairAgent}~\citep{bouzenia2025repairagent}
+spends $99\,\%$ of its total repair time on tool executions, mostly running
+tests, with a median repair time of about $920$ seconds per bug. Validation
+therefore dominates the end-to-end cost of LLM-based repair, and every candidate
+that reaches this step adds directly to that cost.
 
-\begin{enumerate}[leftmargin=*,itemsep=6pt]
+\paragraph{LLMs regenerate patches they have already tried.}
+When candidates are sampled independently, the LLM is unaware of its previously
+generated patches and may produce many repeated or similar
+candidates~\citep{xia2024chatrepair}. Exposing this history does not eliminate
+the problem: \textsc{ChatRepair}~\citep{xia2024chatrepair} keeps earlier
+incorrect patches and their test-failure information in the conversation, yet
+\citet{chen2025conversational} found that duplicate patches still constituted
+$65\,\%$ of all patches it generated during plausible patch generation on
+Defects4J bugs. Feedback-driven refinement does not fully resolve the problem
+either: when the underlying repair hypothesis is flawed, refinement tends to
+produce only superficial variants of the same incorrect
+idea~\citep{le2026semantic}. Since every such candidate must still be validated,
+this redundancy directly inflates the cost of the already expensive validation
+step.
 
-\item \textbf{Cost-aware probe scheduling.} Schedule the oracle's probes by an
-online per-case kill rate divided by an online per-case cost, rather than by
-pool order or by a kill count.
-\emph{Research question (RQ1).} Does scheduling by \km\ reduce the CPU spent
-refuting a patch, measured against the incumbent pool order, against an
-uninformed random control, and against the published prioritisers \frtp\ and
-additional-greedy coverage?
-\emph{Refuted when} \km\ is not cheaper than pool order beyond the cluster
-bootstrap's interval; or when it is cheaper than pool order but not cheaper
-than \frtp\ and coverage, in which case the contribution is early stopping,
-which is not ours.
-\emph{Status.} Answered in the affirmative by the pilot of
-Section~\ref{sec:pilot}; to be re-established on the full corpus in Phase~2.
+\section{The Information the Loop Discards}
+\label{sec:intro-root}
 
-\item \textbf{Attribution of the effect.} Decompose the index into the three
-things it adds to the incumbent --- having a memory at all, turning a count
-into a rate, and dividing that rate by cost.
-\emph{Research question (RQ2).} Which of the three terms produces the effect?
-\emph{Refuted when} no single step clears the bootstrap interval, so the gain
-is ``having any memory'' and the score is ornament; or when the cost division
-alone carries it, in which case the kill rate is ornament.
-\emph{Status.} Partially answered by the pilot's exponent sweep
-(Section~\ref{sec:pilot-sweep}), which separates the kill term from the cost
-term; the full stepwise ladder is Phase~2.
+Both issues stem from the same root: the repair loop produces valuable
+information but makes little use of it. Every validation reveals which tests
+reject which candidates and at what cost, and every generation reveals which
+repair hypotheses have already been explored. This history offers two levers. It
+can \textbf{schedule validation}, so that each candidate is judged as cheaply as
+possible, and it can \textbf{steer generation}, so that the LLM is directed away
+from directions that have already failed.
 
-\item \textbf{Renormalising the patch family.} Return the scheduled
-counterexample to the proposer as a positive requirement keyed to a test case.
-\emph{Research question (RQ3).} Does doing so move the proposal distribution
-off the mode it has already drawn --- fewer duplicate patches, more repairs at
-the same budget --- where a conversation transcript and a prohibition do not?
-\emph{Refuted when} the duplicate rate does not fall against independent
-repeated sampling; or when it falls and the repair rate does not rise, in which
-case the distribution moved somewhere no better.
-\emph{Status.} Not addressed by the pilot. The baseline is set by published
-measurement: independent repeated prompting has already been reported to repair
-$23$ bugs against conversational repair's $18$ at an equal budget of $24$ model
-calls, with $65\,\%$ of the conversational system's patches
-duplicates~\citep{chen2025conversational}. Any steering arm must beat repeated
-sampling, not the pool order.
+\section{What Existing Solutions Miss}
+\label{sec:intro-gap}
 
-\item \textbf{The disclosure dose.} Showing a counterexample tells the model
-what to satisfy.
-\emph{Research question (RQ4).} At what level of disclosure does the proposer
-begin satisfying \emph{the shown probes} rather than repairing the fault?
-\emph{Refuted when} the share of patches refuted only outside the disclosed set
-is flat across the number of facts shown and across disclosure level, in which
-case there is no dose and the axis does not exist.
-\emph{Status.} Phase~2.
+Prior work reduces validation cost by making each test run
+cheaper~\citep{chen2021uniapr,xiao2024expressapr}, by skipping execution with
+learned verifiers~\citep{jain2025r2egym}, or by scheduling which tests to
+run~\citep{qi2013frtp,xia2025agentless}. Our work targets scheduling, which is
+orthogonal to execution acceleration. Existing schedulers, however, optimise the
+\emph{number} of test executions rather than their \emph{cost}.
+\frtp~\citep{qi2013frtp}, for instance, first runs the tests that failed earlier
+candidates, regardless of how long each one takes, even though long-running
+tests are what make validation expensive.
 
+On the generation side, prior work explores the repair space through tree
+search~\citep{antoniades2025swesearch}, retains earlier attempts in
+memory~\citep{xia2024chatrepair,shinn2023reflexion}, reasons explicitly about
+bug hypotheses~\citep{kang2025autosd,yin2024thinkrepair}, or transfers
+experience across bugs~\citep{chen2025sweexp}. Yet \emph{how} history is
+presented matters as much as \emph{whether} it is presented. As noted above,
+\textsc{ChatRepair} still produces mostly duplicate patches despite seeing its
+own history~\citep{chen2025conversational}. \citet{parasaram2025factselection}
+further show that adding more facts to the prompt can hurt repair, but their
+selection is made once, over static facts, before generation. How the evolving
+history of a single repair session should be condensed, at each iteration, into
+guidance toward untried repair directions remains open.
+
+\section{This Work: \texorpdfstring{\caster}{CASTER}}
+\label{sec:intro-caster}
+
+To fill these gaps, this work proposes \caster, an LLM-based repair approach
+that turns the repair history into two complementary mechanisms.
+
+\textbf{Cost-aware validation scheduling} combines the failure history of each
+test with its execution cost to decide which tests to run first, so that
+unpromising patches are rejected with minimal execution time.
+
+\textbf{Selected hints} replace the accumulation of raw history in the prompt
+with a small, iteration-specific set of hints, distilled from previously tried
+patches and their failures, that steer the LLM away from repair hypotheses
+already shown to fail.
+
+The two mechanisms reinforce each other: scheduling produces the failure
+information from which hints are selected, and better-steered generation reduces
+the number of redundant candidates that reach validation in the first place.
+Because \caster\ operates at the level of scheduling and prompting, it can be
+combined with execution-acceleration
+frameworks~\citep{chen2021uniapr,xiao2024expressapr} and execution-free
+verifiers~\citep{jain2025r2egym}.
+
+\section{Contributions}
+\label{sec:intro-contributions}
+
+\begin{enumerate}[leftmargin=*,itemsep=4pt]
+\item \textbf{A per-test repair history store.} One record per test case,
+updated as the loop runs, holding how many times the test has been run, how many
+of those runs rejected a patch, and how much CPU time those runs took
+(Section~\ref{sec:store}). The same record serves both mechanisms, which is why
+they ship together rather than as two independent features.
+\item \textbf{Cost-aware validation scheduling.} A scheduling rule that ranks
+tests by an estimated rejection rate divided by an estimated cost, so that the
+loop prefers tests that are likely to reject a patch \emph{and} cheap to run
+(Section~\ref{sec:schedule}). Existing repair-loop schedulers rank on a count of
+past rejections only.
+\item \textbf{Selected hints.} A prompt contract that, at every iteration,
+selects a small number of concrete facts from the history and renders them as
+requirements the next patch must satisfy, rather than appending the full
+transcript (Section~\ref{sec:hints}).
+\item \textbf{A mechanism cheap enough to adopt.} Both mechanisms run on one
+record of three numbers per test case, updated in constant time
+(Section~\ref{sec:method-cost}). Nothing is trained, no profiling pass is
+needed, and neither mechanism adds a single program execution or model call ---
+the scheduler reorders runs the loop was already making, and hint selection
+only reads what validation has already recorded. This matters for comparison as
+well as for deployment: the other two families of validation-cost reduction
+require a language-runtime integration or a trained verifier before they return
+anything (Section~\ref{sec:disc-adoption}).
+
+\item \textbf{An evaluation protocol that reports the resource actually spent.}
+CPU seconds as the primary unit with test executions reported alongside, paired
+per task, with interval estimates from a bootstrap over tasks
+(Chapter~\ref{ch:experiments}). The two units can disagree, and a result
+reported in executions alone does not transfer to a deployment that pays for
+time.
 \end{enumerate}
 
-\paragraph{Contribution positioning.} None of the individual ingredients is
-new. Cost-cognizant prioritisation dates to \citet{elbaum2001cost}; the
-additional-greedy family to \citet{rothermel2001prioritizing}; prioritisation
-inside a repair loop to \citet{qi2013frtp}; and Beta-posterior estimates with
-$\varepsilon$-greedy exploration are standard. The claim made here is at the
-level of the \emph{key and the unit}. First, the memory is indexed by test
-case, which is what lets one record serve both the scheduler and the prompt;
-every memory in the surveyed repair literature is indexed by a class. Second,
-the ranked quantity is a rate divided by a measured cost, where the published
-repair-loop prioritiser ranks on a count and discards both the non-kills and
-the cost. Third --- and this is the finding the pilot contributes rather than
-the design --- on a pool with $58.7\times$ internal cost spread the two units
-of account disagree in sign, so the deployment-facing claim cannot be read off
-an execution count at all.
+\section{Structure of This Report}
+\label{sec:intro-structure}
 
-\section{Scope}
-\label{sec:scope}
-
-The study is bounded to the dimensions in Table~\ref{tab:scope}.
-
-\begin{table}[H]
-\centering
-\caption{Project scope.}
-\label{tab:scope}
-\small
-\begin{tabularx}{\textwidth}{@{}lX@{}}
-\toprule
-\textbf{Dimension} & \textbf{Specification}\\
-\midrule
-Task domain & Single-fault repair of competitive-programming submissions; one
-faulty program, one contest test pool, stdout-compared verdicts.\\
-Benchmark & ConDefects~\citep{wu2024condefects}, Python subset. Chosen because
-every test input ships with the output the judge accepted, so a refutation is a
-concrete input/output pair rather than a pass/fail bit.\\
-Proposer & One OpenAI-compatible chat model per grid; \code{gpt-4o-mini} for
-the data the pilot reuses. The proposer is not a variable of the study.\\
-Oracle & One program, one input, hard timeout, CPU measured with
-\code{getrusage(RUSAGE\_CHILDREN)}; probing stops at the first refutation.\\
-Cost unit & CPU seconds as primary, test executions reported alongside.
-Wall-clock time is never used as a cost, because it is contaminated by sibling
-processes.\\
-Core method & Per-case Beta-posterior kill rate $K$ over an online per-case
-mean cost $\hat{m}$, ranked by \km, with $\varepsilon$-greedy exploration.\\
-Evidence in this document & A replay and re-execution pilot on the frozen
-\cegmem\ data: $68$ tasks, $2{,}523$ cases, $4{,}670$ patches,
-$6{,}800$ measured rounds per policy.\\
-Out of scope here & The \caster\ grid itself (22 arms), the steered prompt
-contract, duplicate-rate and token measurements, multi-fault and multi-language
-repair, and any claim about repair \emph{quality} beyond the soundness
-invariant of Section~\ref{sec:soundness}.\\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\paragraph{Scope of completed work at the proposal stage.} The \caster\
-implementation exists: ten command-line verbs, the module boundaries of
-Section~\ref{sec:overview}, and $263$ unit tests that run without a network, a
-model or the benchmark. What has \emph{not} happened is the experiment. No arm
-of the grid has been run to completion on the full corpus, no steered arm has
-been run at all, and therefore nothing in this document derived from the
-\caster\ repository is reported as a result. The evidence is the pilot, and the
-pilot runs on the previous project's data by design --- see
-Section~\ref{sec:why-pilot-here} for why that is the stronger choice and not
-merely the available one.
-
-\section{Report Structure}
-
-Chapter~\ref{ch:related} surveys validation-cost work along four families ---
-generate-and-validate repair and its validation bill, regression test
-prioritisation, repair-specific prioritisation, and the token economics of
-LLM repair loops --- consolidates them into one comparison table, and states
-the gaps. Chapter~\ref{ch:background} gives the theory: the two costs of the
-repair loop, total versus additional greedy prioritisation, what \frtp\ records
-and what it throws away, the typed memory of \cegmem\ that this work starts
-from, the Beta-posterior estimator behind $K$, and the cost-accounting rules.
-Chapter~\ref{ch:framework} describes the proposed system and reports the
-preliminary validation in full. Chapter~\ref{ch:evaluation} is the evaluation
-plan: metrics, the arm roster, the ablation ladder, and the two tiers of
-baseline. Chapter~\ref{ch:summary} summarises, lists limitations honestly, and
-gives the phase timeline.
+Chapter~\ref{ch:related} surveys related work in three groups: reducing patch
+validation cost, steering generation, and context selection.
+Chapter~\ref{ch:background} builds the necessary background from first
+principles. Chapter~\ref{ch:method} describes \caster.
+Chapter~\ref{ch:experiments} states the research questions and the protocol for
+the $100$-task pilot, and Chapter~\ref{ch:results} reports the results.
+Chapters~\ref{ch:discussion}--\ref{ch:conclusion} discuss when the approach
+does and does not help, state the threats to validity, and conclude.

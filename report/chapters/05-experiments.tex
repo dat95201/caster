@@ -1,0 +1,556 @@
+\chapter{Experiments}
+\label{ch:experiments}
+
+This chapter states what is being asked, on what data, against what, and how the
+answers will be judged. It is written before the results so that every quantity
+in Chapter~\ref{ch:results} has a declared meaning and a declared success
+criterion rather than one chosen after the numbers arrived.
+
+\section{Research Questions}
+\label{sec:exp-rq}
+
+Four questions. Each is paired with the outcome that would \emph{refute} it,
+because a question with no refuting outcome is a name for a group of
+experiments rather than a question.
+
+\begin{description}[leftmargin=0pt,style=unboxed,itemsep=10pt]
+
+\item[\textbf{RQ1 --- Does cost-aware validation scheduling reduce the cost of
+rejecting a patch?}]
+Does ranking tests by $K/\hat{m}^{\,c}$ --- an online rejection rate over an
+online cost --- reduce the CPU spent on validation, compared with the order the
+benchmark ships, an uninformed random order, the published repair-loop
+prioritiser \frtp~\citep{qi2013frtp}, and the classical additional-greedy
+coverage prioritiser~\citep{rothermel2001prioritizing}?
+\par\smallskip
+\emph{Refuted when} the scheduler is not cheaper than the shipped order beyond
+the bootstrap interval; or when it is cheaper than the shipped order but not
+cheaper than \frtp\ and coverage, in which case the contribution is early
+stopping, which is not ours.
+
+\item[\textbf{RQ2 --- Do selected hints reduce redundant generation?}]
+Does handing the model a small, freshly selected set of concrete requirements
+move its proposals off the ideas it has already tried --- fewer duplicate
+patches, and at least as many repairs at the same budget --- where independent
+repeated sampling, a prohibition, and a full conversation transcript do not?
+\par\smallskip
+\emph{Refuted when} the duplicate rate does not fall against independent
+repeated sampling; or when it falls and the repair rate does not rise, in which
+case the distribution moved somewhere no better.
+
+\item[\textbf{RQ3 --- Do the two mechanisms reinforce each other?}]
+The two mechanisms are claimed to compose: scheduling produces the failure
+record that hints are selected from, and better hints send fewer wasted
+candidates to the expensive validation step. Does the combined system beat the
+sum of what each does alone, on total cost and on repairs within budget?
+\par\smallskip
+\emph{Refuted when} the combination is no better than the better of the two
+alone, in which case the mechanisms are independent and should be reported as
+two separate contributions rather than one system.
+
+\item[\textbf{RQ4 --- Which parts carry the effect, and how sensitive are they?}]
+Three things separate the proposed scheduler from the shipped order: having a
+memory at all, turning a count of rejections into a rate, and dividing that rate
+by cost. Which one produces the effect? And does the answer survive the design
+choices --- the cost exponent $c$, the cold-start rule, the exploration rate,
+and the number of hints shown?
+\par\smallskip
+\emph{Refuted when} no single step clears the bootstrap interval, so the gain is
+simply ``having any memory'' and the score function is ornament; or when the
+answer flips under a routine change of one parameter, in which case the result
+is an artefact of tuning.
+
+\end{description}
+
+\section{Benchmark: ConDefects Python}
+\label{sec:exp-benchmark}
+
+\subsection{Corpus, and the 100-Task Pilot Drawn From It}
+
+The corpus is the Python subset of ConDefects~\citep{wu2024condefects}, chosen
+for the four reasons given in Section~\ref{sec:bg-benchmark}: every test input ships
+with its expected output, a test is one whole-program execution, the inputs
+within a single task are deliberately heterogeneous in cost, and the faults
+post-date the training cut-offs of commonly benchmarked models.
+
+The evaluation reported here is a \textbf{pilot of $100$ tasks} drawn from that
+corpus; the scale and its reasons are in
+Section~\ref{sec:exp-pilot-scale} below, and running the full corpus is the
+first item of future work (Section~\ref{sec:future}).
+
+A task is admitted to the corpus when every one of the following holds.
+The screen is applied before any configuration runs, and the admitted set is
+frozen with a checksum so that no later analysis can change it.
+
+\begin{table}[htbp]
+\centering
+\caption{Corpus admission criteria. Applied once, before treatment.}
+\label{tab:gate}
+\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Criterion & Why\\
+\midrule
+Single-file Python fault & The scope of this study; matches the sandbox model
+of one program, one input.\\
+Faulty and reference versions both present & The reference supplies the expected
+outputs the oracle compares against.\\
+At least one test rejects the faulty version & Otherwise the task is already
+``repaired'' at round~$0$ and measures nothing.\\
+The reference passes every test in the pool & A test the correct program fails
+is an instrument fault, not a fault in the candidate; such tests leave the
+pool.\\
+The reference finishes within the sandbox clock on every pooled test & Applying
+the clock to the reference first is what keeps the oracle sound: a test the
+correct program cannot finish is not a test at all.\\
+Pool size at least the declared minimum & A scheduling experiment on a pool of
+three tests measures nothing about scheduling.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\pendnote{The admission funnel --- how many faults each criterion removed, and
+how many tasks the $100$ were drawn from --- is reported in
+Section~\ref{sec:res-corpus}.}
+
+\subsection{Pilot Scale and Why It Is a Pilot}
+\label{sec:exp-pilot-scale}
+
+\begin{table}[htbp]
+\centering
+\caption{Pilot configuration.}
+\label{tab:pilot-config}
+\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+Parameter & Value & Note\\
+\midrule
+Tasks            & $100$            & Drawn from the admitted ConDefects Python corpus\\
+Seeds per task   & $3$              & Different draws from the same model, same task\\
+Budget $B$       & $20$ rounds      & Maximum candidate patches per session\\
+Runs per configuration & $6{,}000$ rounds & $100 \times 3 \times 20$ at the budget ceiling\\
+Sandbox clock    & $10$\,s wall     & A hard kill, applied to the reference first\\
+Proposer model   & \code{qwen2.5-\hspace{0pt}coder:\hspace{0pt}7b} & One open-weights model served locally
+through an OpenAI-compatible endpoint, held fixed across every configuration\\
+Temperature      & $1.0$            & Fixed; the study varies policy, not decoding\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+This is a pilot and is reported as one. Its purpose is to establish whether the
+effects exist and are large enough to be worth a corpus-scale run, and to fix
+the parameters that the full run must declare in advance. The full ConDefects
+Python corpus is roughly an order of magnitude larger, and running it is the
+next step (Section~\ref{sec:future}).
+
+\subsection{Screens Are Bands, Decided After the Run}
+\label{sec:exp-bands}
+
+One protocol decision governs the whole corpus and is worth stating before the
+configurations, because it determines what can be asked afterwards.
+
+A \emph{screen} rejects a task before any measurement exists; a \emph{band}
+keeps every task and groups them at analysis time. They are not equally
+reversible --- a screen must be decided before the first cell exists and cannot
+be undone, whereas a band can be re-cut any number of ways from the same rows
+--- so where both are available this study takes the reversible one. The
+corpus admits every task whose oracle is sound: the criteria in
+Table~\ref{tab:gate} are only those without which a measured number would be
+\emph{wrong}, never those that merely shape the population.
+
+Table~\ref{tab:bands} declares the three band axes before the corpus run, one
+per condition of Section~\ref{sec:disc-limits}.
+
+\begin{table}[htbp]
+\centering
+\caption[Band axes, declared before the run]{The three band axes, their
+boundaries, and when each becomes known. Boundaries are fixed here so that the
+banded result in Chapter~\ref{ch:results} is not a cut chosen after seeing
+which one looks best.}
+\label{tab:bands}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.14\textwidth} >{\raggedright\arraybackslash}p{0.34\textwidth} X@{}}
+\toprule
+Axis & Bands & Status\\
+\midrule
+Pool size $|P|$ &
+\code{degenerate} $=1$; \code{tiny} $2$--$9$; \code{small} $10$--$19$;
+\code{standard} $\ge 20$ &
+A property of the frozen pool, known before any candidate is drawn. A
+\emph{stratification}\\
+\addlinespace
+Within-task cost spread &
+\code{flat} / \code{mixed} / \code{spread}, by terciles of the within-task
+coefficient of variation of per-test CPU &
+A property of the frozen cost table, established by the arm-independent
+\code{audit} pass before any configuration runs. A \emph{stratification}\\
+\addlinespace
+Task difficulty &
+\code{dead} $=0$; \code{hard} $<0.25$; \code{mid} $0.25$--$0.60$;
+\code{easy} $0.60$--$1$; \code{trivial} $=1$ &
+The repair rate of the floor configuration, per model. An \textbf{outcome}, so
+it may only ever be a post-hoc band and never an admission criterion\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two rules keep the difficulty axis honest, because it is the one that could be
+abused. The rate is taken from a single designated floor configuration
+(\code{no-mem}), not from the configuration under test, so no policy can band
+itself into a favourable population. And it is frozen once, beside the corpus
+checksum, and never recomputed by an analysis script --- a rate recomputed on
+every call is a rate that moves when the merge moves, and every banded number
+downstream would move with it without saying so.
+
+The \code{standard} pool band is exactly what a pre-run screen of $|P| \ge 20$
+would have admitted, so every number such a screen would have produced is still
+computable, and the tasks it would have deleted are reported beside it rather
+than discarded.
+
+\section{Baselines and Configurations}
+\label{sec:exp-config}
+
+\subsection{The Two Blocks}
+
+Configurations fall into two blocks that differ in what they cost to run, and
+the difference governs the order of work.
+
+\textbf{Block A} varies only the \emph{order} in which tests are run. The
+prompt is identical across these configurations, so the candidate patches can be
+drawn once and reused: adding a Block~A configuration costs CPU but no model
+calls.
+
+\textbf{Block B} varies the \emph{prompt}. Here the round-$t$ prompt depends on
+what validation found in rounds $1..t-1$, so the draw and the schedule cannot be
+separated and each configuration needs its own set of model calls.
+
+One identity ties the two blocks together. In round~$1$ the store is empty,
+so a steered prompt carries no hints and is byte-identical to an unsteered one.
+Round~$1$ must therefore be the same draw in every configuration, which requires
+the draw seed to be a function of the task, the seed and the round number only
+--- never of the policy. Deriving it from the full configuration key would make
+every configuration buy its own round~$1$ and would silently destroy the pairing
+that every comparison in Section~\ref{sec:exp-stats} depends on.
+
+\subsection{Block A --- Scheduling Configurations}
+
+\begin{table}[htbp]
+\centering
+\caption{Block A: configurations that differ only in test order. ``Answers''
+names the research question each one serves.}
+\label{tab:blocka}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.215\textwidth} X l@{}}
+\toprule
+Name & Order of tests & Answers\\
+\midrule
+\code{full-suite}    & Every test, no early stop & calibration\\
+\code{no-mem} \newline \emph{(independent} \newline \emph{repeated sampling)}
+                     & Shipped order, and the store is never updated, so every round
+                       redraws from scratch. The name is the implementation's; what it
+                       \emph{is} is independent repeated prompting & calibration, RQ2 baseline\\
+\code{natural}       & The order the benchmark ships --- \textbf{the incumbent} & RQ1\\
+\code{random}        & Seeded shuffle, reshuffled each round --- \textbf{the control} & RQ1\\
+\code{frtp}          & Proven rejecters by \emph{count} descending, then the rest~\citep{qi2013frtp} & RQ1, RQ4\\
+\code{coverage}      & Additional-greedy over reference line coverage~\citep{rothermel2001prioritizing} & RQ1\\
+\code{cost-only}     & $\hat{m}$ ascending; no rejection information & RQ4\\
+\code{kill-only}     & $K$ descending; no cost information & RQ4\\
+\textbf{\code{sched}} & $K/\hat{m}^{\,c}$ --- \textbf{the proposed scheduler} & RQ1, RQ3\\
+\midrule
+\code{sched-cs-median} \newline \code{sched-cs-q75} & Cold start at the median or the $75$th percentile instead of the max & sensitivity\\
+\code{sched-bucket}  & Discrete buckets instead of a continuous score & sensitivity\\
+\code{sched-explore0}& $\varepsilon = 0$ & sensitivity, RQ4 precondition\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two framing points govern how this table is read.
+
+\paragraph{\code{natural} is the incumbent, not a neutral control.} Sorting by
+file name is not a scheduling decision anyone made; it is what any
+implementation gets for free, and therefore what most implementations do. It is
+also not arbitrary: contest naming puts the small, public, highly discriminating
+sample cases first, so the shipped order is \emph{better} than chance. The
+uninformed control is \code{random}, and reporting both is what separates
+``better than nothing'' from ``better than the thing people actually run''.
+
+\paragraph{\code{frtp} is the published baseline, implemented as published.} It
+ranks on the rejection \emph{count}, which is what \frtp\ ranks on, not on a
+rate and not on anything divided by cost. A baseline weakened to make the
+proposal look better answers nothing.
+
+\subsection{Block B --- Prompt Configurations}
+
+\begin{table}[htbp]
+\centering
+\caption{Block B: configurations that differ in what the prompt carries. All
+use the proposed scheduler unless the name says otherwise.}
+\label{tab:blockb}
+\small
+\begin{tabularx}{\textwidth}{@{}l X l@{}}
+\toprule
+Name & What the prompt carries after round~1 & Answers\\
+\midrule
+\code{hints}          & $k{=}2$ selected requirements, \textbf{shipped test order} & RQ2, RQ3\\
+\code{sched+hints}    & $k{=}2$ selected requirements \textbf{and} the proposed scheduler & RQ2, RQ3\\
+\code{exclusion}      & The same facts phrased as a prohibition & RQ2\\
+\code{chat}           & The full conversation transcript, \textsc{ChatRepair}-style~\citep{xia2024chatrepair} & RQ2\\
+\midrule
+\code{hints-k1}, \code{hints-k3} & $k \in \{1,3\}$ instead of $2$ & RQ4\\
+\code{hints-sample}   & Disclosure \code{sample-only} & RQ4\\
+\code{hints-noreq}    & Disclosure \code{no-required-line} & RQ4\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{\code{no-mem} is the baseline for RQ2, and it is a strong one.} It
+redraws independently every round under a policy-free seed, which is exactly
+\emph{independent repeated prompting}. \citet{chen2025conversational} measured
+that strategy at $23$ bugs repaired against \textsc{ChatRepair}'s $18$ at an
+equal budget of $24$ model calls, with $65\,\%$ of the conversational system's
+patches being duplicates. The obvious iterative strategy is therefore already
+published as \emph{worse} than simply drawing again. Block~B must beat
+\code{no-mem}; beating \code{natural} proves nothing on the generation side.
+
+\subsection{The Factorial for RQ3}
+
+RQ3 asks whether the two mechanisms reinforce each other, which requires each of
+them alone and both together on the same tasks and seeds.
+Table~\ref{tab:factorial} is that design.
+
+\begin{table}[htbp]
+\centering
+\caption{The $2\times2$ design behind RQ3. Each cell is a configuration run on
+the same $100$ tasks $\times$ $3$ seeds.}
+\label{tab:factorial}
+\small
+\begin{tabular}{@{}l l l@{}}
+\toprule
+ & \textbf{Shipped test order} & \textbf{Cost-aware scheduling}\\
+\midrule
+\textbf{No hints}       & \code{no-mem} (baseline) & \code{sched}\\
+\textbf{Selected hints} & \code{hints}             & \textbf{\code{sched+hints}} (full system)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Parameter Sweeps}
+
+Two parameters are measured rather than assumed. The \textbf{cost exponent} $c$
+of Equation~\eqref{eq:score} is swept over the range $[0, 1.25]$, whose two
+endpoints are the two published positions: $c=0$ is ranking on the rejection
+rate alone, $c=1$ is full cost-cognizance. The \textbf{hint dose} is swept over
+$k \in \{1,2,3\}$ crossed with the three disclosure levels of
+Table~\ref{tab:disclosure}.
+
+Both sweeps are reported as sensitivity, not as headline results. A value
+selected on the same data it is reported on is optimistically biased, so the
+full corpus run must declare $c$ and $k$ in advance and report the sweep as a
+check (Section~\ref{sec:future}).
+
+\section{Metrics}
+\label{sec:exp-metrics}
+
+The study does not collapse into a single figure of merit, because the two
+halves of the loop spend different resources and a composite would let one pay
+for the other.
+
+\begin{table}[htbp]
+\centering
+\caption{Validation-side metrics (RQ1, RQ3, RQ4).}
+\label{tab:metrics-validation}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} X X@{}}
+\toprule
+Metric & Definition & Success criterion\\
+\midrule
+CPU seconds per session & \code{getrusage} delta summed over the tests actually
+run; paired per task and seed & \textbf{Primary.} The scheduler below
+\code{natural}, \code{random}, \code{frtp} and \code{coverage}, beyond the
+bootstrap interval\\
+Test executions per session & How many tests were run; reported because the
+prioritisation literature reports executions & Reported for every configuration;
+\emph{not} a success criterion on its own\\
+CPU per execution & CPU divided by executions; separates ``cheaper'' from
+``fewer'' & Diagnostic: it is where the mechanism claim lives\\
+Stepwise decomposition & Paired $\Delta$ CPU for each one-variable step of the
+ablation ladder (Table~\ref{tab:ladder}) & At least one step clears the
+interval\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Generation-side metrics (RQ2, RQ3, RQ4).}
+\label{tab:metrics-generation}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} X X@{}}
+\toprule
+Metric & Definition & Success criterion\\
+\midrule
+Duplicate rate & $1 - \text{distinct}/\text{total}$ patches in a session, over
+normalised patch text & \textbf{Primary for RQ2.} Falls against \code{no-mem}\\
+\code{success@B} & Share of sessions that reach a plausible patch within budget
+$B$ & Rises, or at minimum does not fall, wherever the duplicate rate falls\\
+First-accept round & The round at which the first plausible patch appears &
+Reported paired\\
+Prompt and completion tokens & The generation bill, since the LLM-repair
+literature prices repair in tokens & Reported for every Block~B configuration\\
+Hint leakage & Of the patches that are rejected at all, the share whose
+rejecting tests are \emph{disjoint} from what the prompt showed --- the patch
+satisfied everything it was told and died elsewhere. Computed from the
+\code{facts\_shown} field on every round record against the full rejection
+vector produced by the \code{audit} pass & \textbf{Primary for the RQ4 dose
+curve.} Should fall monotonically as disclosure rises, or the disclosure axis
+does not exist\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\paragraph{Hint leakage needs no held-out tests.} The leakage metric is
+computed entirely from data the main grid already produces: each round record
+stores the facts the prompt showed, and the \code{audit} full-scan pass stores,
+for every patch, the complete set of tests that reject it. The share of
+rejections falling outside the disclosed set is then a set difference over
+those two, so the measurement works at the default setting where the whole pool
+is the oracle and nothing is held out.
+
+A \emph{second}, narrower question does need held-out tests: of the patches the
+loop \emph{accepted}, how many fail on tests the loop never ran? With no
+holdout, acceptance is defined by the same tests that would have to judge it,
+so no post-hoc analysis can recover that number. That question is answered by a
+separate pass with \code{--holdout} on a \emph{subset} of tasks; it is a
+different question from RQ1 and does not need the full grid, so it does not
+require re-freezing the pilot corpus.
+
+\paragraph{Guaranteed, not measured.} By Definition~\ref{def:soundness},
+\code{success@B} and the first-accept round are identical across every Block~A
+configuration, on every task and seed, not merely on average. The experiment
+therefore \emph{asserts} that equality and halts if it is violated, rather than
+reporting it as a finding. A difference there would be a soundness bug.
+
+\section{The Ablation Ladder}
+\label{sec:exp-ladder}
+
+An ablation chain must change one thing per step or it cannot attribute the
+effect. Going directly from \code{frtp} to \code{sched} changes two things at
+once --- a count becomes a rate, \emph{and} the rate is divided by cost --- so
+the ladder is built to separate them.
+
+\begin{table}[htbp]
+\centering
+\caption{The ablation ladder for RQ4. One variable per step.}
+\label{tab:ladder}
+\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}
+\toprule
+Step & What changes & What it means if this step does not clear the interval\\
+\midrule
+\code{natural} $\to$ \code{cost-only}  & Cost enters; no rejection information &
+Cost alone is not a usable signal\\
+\code{natural} $\to$ \code{kill-only}  & Rejection rate enters; no cost &
+The memory term is ornament\\
+\code{natural} $\to$ \code{frtp}       & The published baseline's step &
+\frtp\ does not reproduce in this setting\\
+\code{frtp} $\to$ \code{kill-only}     & A \textbf{count} becomes a \textbf{rate} &
+Reading the denominator buys nothing\\
+\code{kill-only} $\to$ \code{sched}    & The rate is divided by cost &
+Cost-awareness is ornament\\
+\code{sched} $\to$ \kmc{c}             & The exponent is tuned &
+$c$ need not be a parameter\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Implementation and Measurement}
+\label{sec:exp-impl}
+
+\subsection{The Tool}
+
+\caster\ is a Python package of command-line verbs; the ones needed to
+reproduce the pilot are \code{freeze} (apply the admission screen and write the
+frozen corpus), \code{propose} (fill the response cache and patch store),
+\code{audit} (a full-scan pass establishing, for every patch, which tests
+reject it and what each costs), \code{evaluate} (walk the task $\times$ seed
+$\times$ configuration grid, resumably), then \code{merge}, \code{analyse} and
+\code{report}. Three module boundaries are asserted by unit tests: only the
+benchmark adapter reads the benchmark, the store has no file access and no
+benchmark imports, and the prompt module does not import the validator. The
+package ships $263$ unit tests that run without a network, a model or the
+benchmark.
+
+\subsection{How Cost Is Measured}
+
+Cost is the delta of \code{getrusage(RUSAGE\_CHILDREN)} across one test run:
+CPU seconds, never wall clock. Wall clock on a machine running several workers
+is contaminated by siblings, which would make the learned cost estimate a
+function of machine load rather than of the test. Because \code{getrusage}
+accounting is per process, parallelism is process-per-worker and the sandbox
+refuses to run under a thread pool rather than let one worker's CPU be
+attributed to another.
+
+Three further rules keep the measurement honest.
+
+\begin{enumerate}[leftmargin=*,itemsep=4pt]
+\item \textbf{The cost table is established by the audit pass, not by any
+configuration.} If a configuration were allowed to populate the cost table, that
+table would become a function of which configuration ran first, and every later
+comparison would inherit the bias.
+\item \textbf{No (patch, test) pair is executed twice.} Outcomes are memoised,
+and the identity
+$(\text{fresh runs} - \text{timeout re-runs}) + \text{cache hits} = \sum
+\text{test calls}$
+is instrumented per scan and over the whole run rather than asserted in prose. A
+stored outcome that disagrees with a fresh one halts the run.
+\item \textbf{Timeouts are quarantined.} A timed-out test is never served from
+the cache and never enters the cost model, because a correct-but-slow program
+times out too and entering timeouts at the clock value would let a handful of
+them dominate the cost estimate.
+\end{enumerate}
+
+\subsection{Reproducibility}
+
+The admitted corpus, the pool order and the parameter values are frozen before
+any configuration runs, under a checksum. Every value that can change a
+measured quantity is either part of a cache key --- model, temperature, prompt,
+output budget, draw seed --- or recorded in the run's protocol record, which
+carries the sandbox clock, the interpreter version, the backend and the model
+digest. Merging results across machines refuses to join across a disagreement
+in that record, so a parameter changed halfway through a run produces a refusal
+rather than a quietly mixed average.
+
+\section{Statistical Analysis}
+\label{sec:exp-stats}
+
+\paragraph{Pairing.} Every comparison is paired at the level of a
+(task, seed) cell under common random numbers, so that two configurations see
+the same round-$1$ candidate on the same task. Unpaired comparison on $100$
+tasks with the cost spread this corpus has would be dominated by which tasks
+landed in which arm.
+
+\paragraph{Intervals.} Per-task totals are not independent across seeds, so
+confidence intervals come from a \emph{cluster bootstrap over tasks} ---
+resampling whole tasks with replacement, $10{,}000$ resamples --- rather than
+from a bootstrap over cells, which would treat three seeds on one task as three
+independent observations and report an interval that is too narrow.
+
+\paragraph{Tests.} Paired differences are tested with the Wilcoxon signed-rank
+test over per-task totals. The distribution of per-task CPU is heavily
+right-skewed, so a $t$-test on the mean would be driven by a few expensive
+tasks.
+
+\paragraph{Effect size.} Differences are reported as a percentage change in
+total CPU together with the number of tasks on which the comparison goes each
+way. The second number matters: an aggregate win driven by three expensive tasks
+is a different claim from a win on eighty tasks, and the per-task scatter in
+Chapter~\ref{ch:results} shows which it is.
+
+\paragraph{Multiple comparisons.} Four primary contrasts are declared in
+advance: \code{sched} against \code{natural}, \code{sched} against \code{frtp}
+(RQ1), \code{sched+hints} against \code{no-mem} on duplicate rate (RQ2), and
+\code{sched+hints} against the better of \code{sched} and \code{hints} (RQ3).
+These four carry a Holm correction. Every other contrast in
+Chapter~\ref{ch:results} --- the ablation ladder, both sweeps, and the
+sensitivity table --- is reported with its interval and labelled exploratory,
+and no claim rests on one of them alone.

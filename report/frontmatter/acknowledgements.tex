@@ -7,27 +7,21 @@ Engineering, Ho Chi Minh City University of Technology (HCMUT), for the
 foundational and specialised teaching that made this work possible.
 
 I am especially grateful to my instructor, \InstructorName, for the guidance
-that shaped the scope of this proposal. Two pieces of that guidance did most of
-the work. The first was the insistence that a research question be stated
-together with the outcome that would \emph{refute} it; applying that test
-removed three questions from an earlier roster that turned out to be names for
-groups of experiments rather than questions. The second was the instruction to
-measure the resource the system actually spends rather than the one the
-literature happens to report, which is the reason the preliminary study in
-Chapter~\ref{ch:framework} reports CPU seconds and test executions side by
-side, and the reason it found that the two disagree in sign.
+that shaped the scope of this work. Two pieces of that guidance did most of the
+work. The first was the insistence that a research question be stated together
+with the outcome that would \emph{refute} it; applying that test removed several
+items from an earlier list that turned out to be names for groups of experiments
+rather than questions. The second was the instruction to measure the resource
+the system actually spends rather than the one the literature happens to report,
+which is why Chapter~\ref{ch:experiments} reports CPU seconds and test
+executions side by side instead of either alone.
 
-This proposal also stands on a previous study of my own, \cegmem, in which a
-counterexample-guided repair loop stored every refuted patch under a failure
-type keyed by its edit location. That study answered its question and, in
-answering it, exposed the one this proposal is about: a memory that knows
-\emph{which patches not to try again} still says nothing about \emph{which test
-to run first}. I thank my colleagues for the discussions that made that
-distinction sharp enough to build on.
+I also thank my colleagues for the discussions that sharpened the central
+distinction this work is built on: that a repair loop learns two different
+things on every iteration --- which test is worth running, and which repair idea
+is already dead --- and that both are usually discarded.
 
-This document reports work in progress. The preliminary validation in
-Section~\ref{sec:pilot} is a replay and re-execution study on the frozen data
-of the earlier project; the full grid on the \caster\ implementation --- the
-twenty-two arms, the steered prompt contract, and the complete fault corpus ---
-has not been run, and is stated as Phase~2 work. Any remaining errors are my
-own.
+This document reports work in progress. The implementation and its unit tests
+are complete; the $100$-task pilot is running at the time of writing, and
+Chapter~\ref{ch:results} marks every number that depends on it. Any remaining
+errors are my own.

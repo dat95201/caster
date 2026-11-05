@@ -1,0 +1,443 @@
+\chapter{Methodology}
+\label{ch:method}
+
+\section{Overview}
+\label{sec:method-overview}
+
+\caster\ is an iterative repair loop with one extra component: a small record
+kept for each test case, updated every time that test case is run. Everything
+else follows from what is in that record.
+
+The record holds three numbers per test case: how many times the test has been
+run in this session, how many of those runs rejected a candidate, and how much
+CPU time those runs consumed. From those three numbers the loop derives two
+estimates --- how likely the test is to reject the next candidate, and how long
+it takes --- and spends them in two places. The \textbf{scheduler} uses both to
+decide which test to run first. The \textbf{hint selector} uses the first,
+together with how readable the test's input is, to decide which facts go into
+the next prompt.
+
+Figure~\ref{fig:pipeline} shows one round, and Table~\ref{tab:dataflow} gives
+the same path as a table of inputs and outputs.
+
+\begin{figure}[htbp]
+\centering
+\resizebox{0.80\textwidth}{!}{%
+\begin{tikzpicture}[
+  stage/.style={draw=bkblue,fill=bkblue!6,rounded corners=2pt,align=center,
+                inner sep=6pt,font=\small,minimum height=18mm,text width=32mm},
+  store/.style={draw=pendred,fill=pendred!6,rounded corners=2pt,align=center,
+                inner sep=6pt,font=\small,minimum height=14mm},
+  lbl/.style={font=\scriptsize,align=center,inner sep=2pt},
+  arr/.style={-{Stealth[length=2.6mm]},draw=black!70,thick},
+  darr/.style={-{Stealth[length=2.6mm]},draw=pendred!85,thick,dashed}
+]
+% --- the four stages, evenly spaced on one row ---
+\node (gen)   at ( 0.0,0) [stage] {\textbf{1. Generate}\\[2pt] one model call\\
+                                   produces a\\ candidate patch};
+\node (sched) at ( 4.4,0) [stage] {\textbf{2. Schedule}\\[2pt] rank the tests,\\
+                                   freeze the order};
+\node (val)   at ( 8.8,0) [stage] {\textbf{3. Validate}\\[2pt] run tests in\\
+                                   that order, stop\\ at the first rejection};
+\node (hint)  at (13.2,0) [stage] {\textbf{4. Select hints}\\[2pt] pick $k$ facts\\
+                                   for the next\\ prompt};
+
+\draw[arr] (gen)   -- (sched);
+\draw[arr] (sched) -- (val);
+\draw[arr] (val)   -- (hint);
+
+% --- the store, centred under stages 2-4 ---
+\node (store) at (8.8,-3.4) [store,text width=108mm]
+  {\textbf{Repair history store} (Section~\ref{sec:store})\\[2pt]
+   per test case $x$:\; runs $n(x)$,\; rejections $k(x)$,\; total CPU $S(x)$};
+
+% --- three symmetric vertical links, one per stage above it ---
+\draw[darr] (store.north -| sched) -- node[lbl,right,pos=0.55]{read}  (sched.south);
+\draw[darr] (val.south)            -- node[lbl,right,pos=0.45]{write} (store.north -| val);
+\draw[darr] (store.north -| hint)  -- node[lbl,right,pos=0.55]{read}  (hint.south);
+
+% --- the round-to-round feedback, centred above the row ---
+\coordinate (upR) at ($(hint.north)+(0,9mm)$);
+\coordinate (upL) at ($(gen.north)+(0,9mm)$);
+\draw[arr] (hint.north) -- (upR)
+      -- node[lbl,above,pos=0.5]
+         {\textbf{round $t{+}1$:} the selected hints enter the prompt}
+      (upL) -- (gen.north);
+\end{tikzpicture}}
+\caption{One round of the \caster\ loop. The repair history store is written by
+validation and read by both the scheduler and the hint selector, which is why
+the two mechanisms are one system rather than two independent features.}
+\label{fig:pipeline}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Per-round data flow.}
+\label{tab:dataflow}
+\small
+\begin{tabularx}{\textwidth}{@{}l l X l@{}}
+\toprule
+Stage & Input & What happens & Output\\
+\midrule
+1 & prompt, draw seed & one model call; parse out a candidate program &
+candidate $s_t$\\
+2 & store $(n,k,S)$ & score every test by Eq.~\eqref{eq:score}; freeze the
+resulting order & order $\sigma_t$\\
+3 & $s_t,\ \sigma_t$ & run $s_t$ on tests in that order; stop at the first
+rejection & rejecting test $x^\star$, $r_t$ runs, CPU spent\\
+4 & $x^\star$, store & select $k$ proven tests; render them as requirements &
+prompt for round $t{+}1$\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Requirements the Design Must Satisfy}
+
+Five rules are binding on the implementation, because breaking any of them
+produces a plausible-looking but wrong number rather than a visible error.
+
+\begin{description}[leftmargin=1.6cm,style=nextline,itemsep=3pt]
+\item[\textbf{R1}] The store holds $(n, k, S)$ per test case, and the test
+order is derived from it once per round.
+\item[\textbf{R2}] The order is \emph{frozen} for the duration of a round: no
+test is re-ranked once the scan has begun. Re-ranking mid-round would make the
+order depend on results from the same scan, which is not reproducible from the
+store alone.
+\item[\textbf{R3}] The scan stops at the first rejection. Only tests actually
+run update $n$ and $S$; only the rejecting test updates $k$.
+\item[\textbf{R4}] A candidate is accepted only after surviving every usable
+test, so acceptance is independent of the order
+(Definition~\ref{def:soundness}).
+\item[\textbf{R5}] A hint is rendered as a positive requirement over a concrete
+input/output pair, never as a named prohibition, and the prompt never names a
+test whose content it does not show.
+\end{description}
+
+Two measurement rules accompany them. Cost is read as a
+\code{getrusage}\allowbreak\code{(RUSAGE\_CHILDREN)} delta --- CPU time, not
+wall-clock time ---
+because wall clock on a shared machine is contaminated by sibling processes and
+would make the learned cost estimate a function of machine load rather than of
+the test. And because \code{getrusage} accounting is per process, parallelism
+across configurations must be process-per-worker rather than threaded, or one
+worker's CPU is attributed to another.
+
+\subsection{What the Mechanism Costs}
+\label{sec:method-cost}
+
+A method that reduces one cost is only worth having if it does not quietly
+introduce another. It is therefore worth saying precisely what \caster\ adds,
+because the answer is close to nothing: \textbf{three numbers per test case,
+updated in constant time, with nothing trained and nothing executed that the
+loop was not already going to execute.}
+
+\begin{table}[htbp]
+\centering
+\caption[What the mechanism costs to run]{The overhead \caster\ adds to a
+repair loop, per task. $|P|$ is the number of tests in the pool and $B$ the
+round budget.}
+\label{tab:overhead}
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.23\textwidth} l X@{}}
+\toprule
+Resource & Added cost & Note\\
+\midrule
+Memory            & $O(|P|)$ & Three numbers per test: $n$, $k$ and $S$.
+A pool of $40$ tests is a few hundred bytes\\
+Time per test run & $O(1)$ & Two increments and one addition\\
+Time per round    & $O(|P| \log |P|)$ & One sort. Built lazily and abandoned at
+the first rejection, so in practice far less\\
+Extra program executions & \textbf{none} & The scheduler reorders the runs the
+loop was already making; it never adds one\\
+Extra model calls & \textbf{none} & Hint selection reads the store. The prompt
+module cannot execute anything --- it does not import the validator\\
+Prompt growth over a session & \textbf{none} & Exactly $k$ hints every round,
+not $O(B)$ transcript lines\\
+Training & \textbf{none} & There is no model to train and no corpus to collect.
+The statistics are of this task, in this session\\
+Offline profiling pass & \textbf{none} & Test costs are measured from the runs
+the loop pays for anyway\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Two consequences follow. \textbf{The information is free}: the scheduler's
+inputs --- which test rejected which candidate, and how long that took --- are
+by-products of work the loop performs regardless, which is the property that
+made \frtp~\citep{qi2013frtp} cheap enough to adopt. And \textbf{the component
+is small and portable}: the store is statistics over test-case identifiers, with
+no dependency beyond the standard library, no parsing of the program and no
+knowledge of the language, which is why it unit-tests without a benchmark, a
+sandbox or a model, and why any loop that can run a test and time it can keep
+this record.
+
+\paragraph{One caveat, so the claim is not overstated.} The \emph{experiment} in
+Chapter~\ref{ch:experiments} does run an extra full-scan \code{audit} pass over
+every patch and every test. That pass exists so the kill matrix and the cost
+table are established independently of which configuration ran first, which is
+a requirement of \emph{comparing} schedules fairly. It is not part of the
+method, and a deployment running \caster\ does not perform it.
+
+\section{The Repair History Store}
+\label{sec:store}
+
+\subsection{What Is Stored}
+
+For every test case $x$ in the pool, the store holds three counters:
+
+\begin{center}
+\small
+\begin{tabular}{@{}l l@{}}
+\toprule
+$n(x)$ & how many times $x$ has been run in this session\\
+$k(x)$ & how many of those runs rejected the candidate\\
+$S(x)$ & the total CPU seconds those runs consumed\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Nothing else is stored, and in particular nothing about the program under test.
+The store is therefore pure statistics over test-case names: it can be built,
+inspected and unit-tested without a benchmark, a sandbox or a model, which is
+what makes the scheduler testable in isolation.
+
+\subsection{The Two Derived Estimates}
+
+\paragraph{The rejection rate.} Treat ``does $x$ reject the next candidate?'' as
+a coin flip with unknown bias, and estimate that bias from $k(x)$ successes in
+$n(x)$ trials. Using the standard Beta conjugate prior, the posterior mean is
+\begin{equation}
+K(x) \;=\; \frac{k(x) + \alpha}{n(x) + \alpha + \beta}.
+\label{eq:K}
+\end{equation}
+The prior matters more than it looks, so \textbf{both choices ship} and the
+prior is part of the configuration key rather than a constant.
+
+Jeffreys' invariant prior $\mathrm{Beta}(\tfrac12,\tfrac12)$
+\citep{jeffreys1946invariant} is the standard non-informative choice and is
+available as \code{--prior jeffreys}. It is \emph{not} the default, for a
+concrete reason: it places a test that has never been run at $K = 0.5$, which
+outranks a test with a real record of $k=2$ out of $n=10$, whose estimate is
+$0.227$. A policy that always prefers the unmeasured test to the proven one
+degenerates, under uniform costs, into running the whole pool --- so under
+Jeffreys the scheduler stops scheduling.
+
+The default is therefore $\mathrm{Beta}(\tfrac12, 2)$, written
+\code{--prior shipped}, whose mean is $0.2$: above the measured base rate on
+this corpus and comfortably below one half. Trying new tests is then the job of
+the exploration term below, not of a side effect of the prior, and the two are
+not interchangeable. Which prior is better is itself replayable at no cost from
+the full-scan kill matrix, so both are reported.
+
+\paragraph{The cost estimate.} The running mean cost of a test is
+$\hat{m}(x) = S(x)/n(x)$. A test that has never been run has no mean, and the
+cold-start value chosen for it decides how aggressively the loop tries new
+tests. Entering it at zero would make an unrun test infinitely attractive;
+entering it at the pool average would make the first round's order essentially
+arbitrary. \caster\ enters an unrun test at the \emph{maximum} of the observed
+per-test means, which is pessimistic: an unmeasured test must earn its place
+through its rejection rate rather than through an optimistic guess about its
+cost. Two alternative cold starts, the median and the $75$th percentile, are
+kept as sensitivity configurations (Section~\ref{sec:exp-config}).
+
+\subsection{Update Rules}
+
+After each scan, the store is updated as follows. Every test that was actually
+run has its $n$ incremented and its measured CPU added to $S$. The one test that
+rejected the candidate, if any, has its $k$ incremented. Tests in the unrun
+tail of the order are untouched, because they cost nothing and revealed nothing.
+
+One accounting rule is worth stating, because violating it silently corrupts the
+cost estimate. A test that \emph{times out} is excluded from the cost model
+rather than entered at the timeout value. A timeout is weaker evidence than a
+wrong answer --- a correct but slow program times out too --- and entering
+timeouts at the clock value would let a handful of them dominate $\hat{m}$ for
+the whole pool.
+
+\section{Cost-Aware Validation Scheduling}
+\label{sec:schedule}
+
+\subsection{The Ranking Rule}
+
+The scheduler ranks tests by
+\begin{equation}
+\mathrm{score}(x) \;=\; \frac{K(x)}{\hat{m}(x)^{\,c}},
+\qquad c \ge 0,
+\label{eq:score}
+\end{equation}
+and runs them in decreasing score until one of them rejects the candidate.
+
+The intuition is a \emph{rate of return}. $K(x)$ is roughly the probability that
+spending $\hat{m}(x)$ seconds ends the round; dividing one by the other gives
+expected rejections per CPU second, and greedily taking the best return first is
+the natural heuristic for the cost in Equation~\eqref{eq:cost}. Informally: run
+the test that is most likely to say ``no'' per second spent, not the test that
+is most likely to say ``no'' overall.
+
+The exponent $c$ interpolates between two positions that already exist in the
+literature. At $c = 0$ the rule reduces to ranking on the rejection rate alone,
+which is the \frtp\ family's position with a denominator added. At $c = 1$ it is
+the plain ratio \km, full cost-cognizance in the sense of
+\citet{elbaum2001cost}. Intermediate values discount the cost term. Because
+$\hat{m}$ is a noisy online estimate built from few samples early in a session,
+dividing by the full cost can over-correct: one unusually cheap early
+measurement can pin a test at the top of the ranking. Values of $c$ below one
+are the standard way to use a noisy denominator, and $c$ is therefore treated as
+a declared parameter measured by a sweep (Section~\ref{sec:exp-config}) rather
+than as a constant fixed at $1$ by the name of the method.
+
+\paragraph{Exploration.} With probability $\varepsilon = 0.15$, a position in
+the order is filled uniformly at random from the remaining tests instead of
+greedily. This is in the report rather than left as an implementation detail
+because it is load-bearing in two places. Without it, a task whose first test
+rejects every candidate reaches the end of the session having measured exactly
+one test: the cost estimate never fills in, so the scheduler has nothing to
+rank by, and the hint selector has one fact to choose from, which makes the
+hint-count sweep of Chapter~\ref{ch:experiments} compare $k{=}1$ against
+$k{=}1$. And because $\varepsilon$ changes measured numbers, it belongs in the
+configuration key, which means it has to be declared. A configuration with
+$\varepsilon = 0$ is run as a sensitivity check.
+
+\paragraph{The order costs nothing to abandon.} It is built one position at a
+time from the store as it stood when the round began, and construction stops at
+the first rejection, so the unprobed tail is never materialised. Scheduling
+also cannot change \emph{which} candidates are accepted: by
+Definition~\ref{def:soundness} a candidate is accepted only after surviving
+every usable test, so every schedule accepts exactly the same ones. The
+scheduling claim is a pure cost claim, and a difference in repair rate between
+two schedules is a soundness bug rather than a result.
+
+\section{Selected Hints}
+\label{sec:hints}
+
+\subsection{What a Hint Is}
+
+A hint is one test case, shown to the model as a requirement the next patch must
+satisfy:
+
+\begin{quote}\small\ttfamily
+On this input:\\
+\hspace*{1em}5 3\\
+\hspace*{1em}1 4 2 8 5\\
+your program must print exactly:\\
+\hspace*{1em}14\\
+(kills 43\,\% of attempts)
+\end{quote}
+
+Three properties of this form matter, and each is a rule in the implementation.
+
+\paragraph{It is a requirement, not a prohibition.} The hint says what the patch
+must do, not what it must avoid. A prohibition (``stop using integer
+division'') removes one option and leaves the rest of the space unconstrained;
+worse, naming a failure mode in a prompt can make the model more likely to
+produce it. A requirement constrains the output directly and can be checked by
+the model as it writes.
+
+\paragraph{Only proven tests are shown.} A test whose estimate comes entirely
+from the prior, with no actual record, is a guess, and a wrong guess spends
+tokens to point the model in a direction nothing supports. A test must have
+rejected at least one candidate in this session before it can appear as a hint.
+
+\paragraph{The number shown is the posterior rate, and it is worth being
+explicit about where it comes from.} The figure in the last line is
+$K(x)$ of Equation~\eqref{eq:K} --- the same Beta-posterior rejection rate the
+scheduler ranks by, rounded to the nearest percent. It is \emph{not} the
+ranking score $K/\hat{m}^{\,c}$, which mixes in cost and would be meaningless
+to the model, and it is \emph{not} the raw frequency $k(x)/n(x)$.
+
+Under the default prior $\mathrm{Beta}(\tfrac12, 2)$ the shown value is
+\begin{equation}
+K(x) \;=\; \frac{k(x) + 0.5}{n(x) + 2.5},
+\label{eq:shown-rate}
+\end{equation}
+so the $43\,\%$ in the example above is a test that has rejected $k = 4$ of the
+$n = 8$ candidates it has been run against: $(4 + 0.5)/(8 + 2.5) = 0.4286$.
+
+Using the posterior rather than the raw frequency is deliberate. A test with
+$k = 1$ out of $n = 1$ has a raw rate of $100\,\%$, and telling the model that
+every attempt fails this check is a claim no single observation supports; the
+posterior reports $1.5/3.5 = 43\,\%$ instead. The cost of that choice is
+visible in the same two numbers: $k{=}1, n{=}1$ and $k{=}4, n{=}8$ both display
+as $43\,\%$, because at small $n$ the prior is doing most of the work. The
+figure is therefore an estimate of how likely the next candidate is to fail
+this test, not a count of how often past candidates did, and the sentence that
+carries it is worded as an estimate rather than as a tally.
+
+\subsection{How Hints Are Selected}
+
+At every round, the selector ranks proven tests by
+\begin{equation}
+\mathrm{hintscore}(x) \;=\; K(x) \times \mathrm{legibility}(x)
+\label{eq:hintscore}
+\end{equation}
+and takes the top $k$, with $k = 2$ by default.
+
+The cost term $\hat{m}(x)$ is deliberately \emph{absent} from
+Equation~\eqref{eq:hintscore}. The scheduler and the selector spend different
+currencies: a scan pays CPU seconds, a prompt pays tokens. A test that takes
+five seconds to run is expensive for the scheduler and free for the prompt, so
+carrying the cost term into hint selection would discard the most informative
+facts for no benefit.
+
+The legibility term is what replaces it. An input of a few bytes can be shown
+whole; an input of several megabytes cannot, and pasting a truncated prefix of
+it produces a requirement the model cannot satisfy. Inputs above a length
+threshold are rendered as a \emph{shape} --- the first line verbatim, then a
+description of the structure and size --- and are ranked below inputs that can
+be shown in full. The identifier of a test case is never shown, because a file
+name carries no information the model can act on and invites it to reason about
+the benchmark rather than the program.
+
+\subsection{The Disclosure Dial}
+
+How much of a test case the prompt reveals is a parameter, not a fixed choice,
+because it trades two risks against each other. Showing less gives the model too
+little to work with. Showing more invites it to satisfy \emph{the shown tests}
+specifically --- writing a special case for the displayed input rather than
+repairing the fault --- which produces a patch that passes the hinted tests and
+fails everything else.
+
+\caster\ therefore exposes three levels, measured as a dose-response curve in
+Chapter~\ref{ch:results}:
+
+\begin{table}[htbp]
+\centering
+\caption{Disclosure levels, from least to most revealed.}
+\label{tab:disclosure}
+\small
+\begin{tabularx}{\textwidth}{@{}l X@{}}
+\toprule
+Level & What the prompt shows\\
+\midrule
+\code{sample-only} & The input only; the expected output is withheld.\\
+\code{no-required-line} & Input and expected output, but phrased as an
+observation rather than as a required output line.\\
+\code{full} (default) & Input, expected output, and an explicit statement that
+the patch must produce it.\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The number of hints $k$ and the disclosure level are the same dial seen from two
+sides, and Chapter~\ref{ch:results} reports them as one curve rather than two
+findings.
+
+\subsection{Why This Is Not a Transcript}
+
+Three differences from transcript memory follow from the construction.
+
+\emph{The prompt does not grow.} Exactly $k$ hints appear at every round,
+regardless of how long the session has run. A transcript grows linearly in the
+number of rounds and therefore walks past the point where more context starts to
+hurt~\citep{parasaram2025factselection}.
+
+\emph{The content changes.} Which tests have the highest rejection rate changes
+as the session proceeds, so round $10$ can carry entirely different hints from
+round $3$. A transcript is append-only: round $10$ contains everything round $3$
+contained.
+
+\emph{The facts are earned, not asserted.} Each hint is backed by a measured
+record in the store, produced by the scheduler that had to run the test anyway.
+The hint mechanism adds no executions of its own --- it reads the store, it
+never runs anything --- which is why the two mechanisms compose without their
+costs compounding.

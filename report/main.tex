@@ -1,5 +1,5 @@
 % =====================================================================
-%  CASTER -- Internship 2 Proposal
+%  CASTER -- Internship 2 Report
 %  Ho Chi Minh City University of Technology (HCMUT), VNU-HCM
 %  Faculty of Computer Science and Engineering
 %
@@ -18,6 +18,7 @@
 \usepackage[a4paper,left=3cm,right=2.5cm,top=3cm,bottom=3cm,headheight=28pt]{geometry}
 \usepackage{setspace}
 \onehalfspacing
+\setlength{\emergencystretch}{3em}
 
 % ---------- maths ----------
 \usepackage{amsmath,amssymb,amsthm}
@@ -34,6 +35,8 @@
 \usepackage{subcaption}
 \captionsetup{font=small,labelfont=bf}
 \usepackage{longtable}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc}
 
 % ---------- misc ----------
 \usepackage{enumitem}
@@ -42,11 +45,11 @@
 \usepackage{titlesec}
 \usepackage[hidelinks,breaklinks]{hyperref}
 \usepackage{url}
-\usepackage[numbers,sort&compress,super]{natbib}
-\usepackage{pgfgantt}
+\usepackage[numbers,sort&compress]{natbib}
 \usepackage{textcomp}
 
 \definecolor{bkblue}{HTML}{1F4E9C}
+\definecolor{pendred}{HTML}{A33A2E}
 \hypersetup{colorlinks=true,linkcolor=black,citecolor=bkblue,urlcolor=bkblue}
 
 % ---------- header / footer ----------
@@ -70,12 +73,32 @@
 \titlespacing*{\chapter}{0pt}{0pt}{30pt}
 
 % ---------- shorthands used throughout ----------
-\newcommand{\km}{\ensuremath{K/\hat{m}}}
-\newcommand{\kmc}[1]{\ensuremath{K/\hat{m}^{\,#1}}}
 \newcommand{\caster}{\textsc{Caster}}
-\newcommand{\cegmem}{\textsc{CegMem}}
 \newcommand{\frtp}{\textsc{Frtp}}
 \newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\killrate}{\ensuremath{K}}
+\newcommand{\avgcost}{\ensuremath{\hat{m}}}
+\newcommand{\km}{\ensuremath{K/\hat{m}}}
+\newcommand{\kmc}[1]{\ensuremath{K/\hat{m}^{\,#1}}}
+
+% ---------- placeholders for results not yet measured ----------
+% \pend     -- a single missing number inside a table
+% \pendnote -- a paragraph-level notice
+\newcommand{\pend}{\textcolor{pendred}{\rule[0.32ex]{1.1em}{0.9pt}}}
+\newcommand{\pendlong}{\textcolor{pendred}{\textbf{[pending]}}}
+\newcommand{\pendnote}[1]{%
+  \begin{center}
+  \fcolorbox{pendred}{pendred!5}{%
+    \begin{minipage}{0.93\textwidth}
+      \small\textcolor{pendred}{\textbf{To be filled from the 100-task pilot.}}\;#1
+    \end{minipage}}
+  \end{center}}
+\newcommand{\figplaceholder}[1]{%
+  \fcolorbox{pendred}{pendred!5}{%
+    \begin{minipage}[c][4.4cm][c]{0.93\textwidth}
+      \centering\small\textcolor{pendred}{\textbf{Figure to be generated}}\\[4pt]
+      \textcolor{pendred}{#1}
+    \end{minipage}}}
 
 \theoremstyle{definition}
 \newtheorem{definition}{Definition}[chapter]
@@ -106,9 +129,12 @@
 \input{chapters/01-introduction}
 \input{chapters/02-related-works}
 \input{chapters/03-background}
-\input{chapters/04-framework}
-\input{chapters/05-evaluation-plan}
-\input{chapters/06-summary}
+\input{chapters/04-methodology}
+\input{chapters/05-experiments}
+\input{chapters/06-results}
+\input{chapters/07-discussion}
+\input{chapters/08-threats}
+\input{chapters/09-conclusion}
 
 % ======================= BACK MATTER ========================
 \cleardoublepage
