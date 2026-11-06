@@ -118,7 +118,38 @@ def _measure(
     runs = verdict.runs
     reruns = 0
     stored = store.peek(_sha(patch), probe)
+
+    if (stored is not None and stored.verdict == "timeout"
+            and verdict.status == "timeout"
+            and stored.timeout_repeats + 1 < REPEATS_BEFORE_HALT):
+        # Both sides agree it timed out, and the entry is not yet CONFIRMED.
+        # Agreement used to return here, which is why no timeout ever
+        # accumulated evidence: `get()` refuses to serve it, so every pass
+        # re-executed it and every pass agreed and stopped. Keep going until
+        # the entry has `REPEATS_BEFORE_HALT` consecutive timeouts on one host
+        # — or until one of the repeats says something else, in which case the
+        # conclusive verdict wins and the pair becomes servable the normal way.
+        confirmed = stored.timeout_repeats + 1
+        seen = ["timeout"]
+        while confirmed < REPEATS_BEFORE_HALT:
+            again = adapter.run(task_name, probe, patch)
+            runs += again.runs
+            reruns += again.runs
+            store.timeout_reexecutions += again.runs
+            seen.append(again.status)
+            if again.status != "timeout":
+                store.note_timeout_flip(_sha(patch), probe, seen, stable=False)
+                return again, runs, reruns
+            confirmed += 1
+        return dataclasses.replace(verdict, timeout_repeats=confirmed), runs, reruns
+
     if stored is None or stored.verdict == verdict.status:
+        if verdict.status == "timeout" and stored is not None:
+            # Already confirmed; carry the count forward so `put` does not
+            # reset it to 0 and start the whole loop again next pass.
+            return (dataclasses.replace(verdict,
+                                        timeout_repeats=stored.timeout_repeats),
+                    runs, reruns)
         return verdict, runs, reruns
     if "timeout" not in (stored.verdict, verdict.status):
         # Neither side is a timeout: divergence is fatal. `store.put` is
@@ -295,6 +326,7 @@ def scan(
                 output_len=(len(verdict.output) if verdict.output is not None else None),
                 error_type=verdict.error_type,
                 error_message=verdict.error_message,
+                timeout_repeats=verdict.timeout_repeats,
                 flush=False,
             )
 

@@ -66,7 +66,16 @@ def test_no_grid_wide_flag_is_silently_outranked_by_an_arm():
     assert by_arm["km"].explore_p == 0.99 and by_arm["km"].prior == "jeffreys"
     assert by_arm["km-explore0"].explore_p == 0.0        # the arm IS its explore_p
     assert by_arm["km-explore0"].prior == "jeffreys"     # ... but not its prior
-    assert set(Grid.FORWARDED) <= {f for f in dests} | {"prior"}
+    # Every forwarded field must be reachable from the CLI. Two are reachable
+    # under a different name and are named here so the alias is deliberate
+    # rather than a hole: `prior` is positional-ish, and the CLI exposes the
+    # NEGATIVE of `serve_stable_timeouts` as `--quarantine-timeouts`, because
+    # the default is to serve and an opt-out reads better than a flag that
+    # does nothing. Both are declared in `keys.KEY_FLAGS`.
+    aliased = {"prior", "serve_stable_timeouts"}
+    assert set(Grid.FORWARDED) <= dests | aliased
+    from caster.keys import KEY_FLAGS
+    assert "quarantine_timeouts" in dests and "quarantine_timeouts" in KEY_FLAGS
     assert "cost-only" in policies.ORDERINGS
 
 

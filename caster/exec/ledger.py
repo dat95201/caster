@@ -431,7 +431,8 @@ class CaseLedger:
         Different cost currency from the schedule: the scan pays CPU, the prompt
         pays tokens (prompt rule 4). The ranking score is never reported — the
         number that reaches the prompt is a claim about the world ("this input
-        kills 43% of attempts") and must stay true, so the *raw* K is returned.
+        an estimated 43% of attempted fixes get this input
+        wrong") and must stay true, so the *raw* K is returned.
 
         Proven cases only (prompt rule 5). A dominant illegible killer still wins
         when nothing else is close, and `steer.render` then shows it as a shape

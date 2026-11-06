@@ -56,7 +56,8 @@ def test_every_knob_changes_the_key():
     moved = {
         "prior": "jeffreys", "cold_start": "median", "explore_p": 0.0,
         "tie_break": "name", "steer_on": True, "k_facts": 2,
-        "overlap_thr": 0.0, "overlap_min_rej": 2,
+        "overlap_thr": 0.0, "overlap_min_rej": 2, "show_last_output": False,
+        "serve_stable_timeouts": False,
         "disclosure": "sample-only", "show_kill_rate": False, "k_candidates": 5,
         "vs_schedule": True, "candidate_policy": "explore", "passing_block": True,
         "steer_mode": "exclusion", "transcript_cap_tokens": 4000,

@@ -40,6 +40,7 @@
     "km+chat",
     "km+steer-k1",
     "km+steer-k2",
+    "km+steer-nolast",
     "km+steer-sample",
     "km+steer-noreq",
     "km+steer+vs"

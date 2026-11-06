@@ -29,7 +29,8 @@ Six hard rules, each tied to a measurement or a paper finding:
 4. **Evidence ranks by `K × legibility`, not `K/m̂`** — a different cost
    currency: the scan pays CPU, the prompt pays tokens. The **raw K** is what
    reaches the prompt, because the number there is a claim about the world
-   ("this input kills 43% of attempts") and must stay true. `ledger.evidence`
+   ("an estimated 43% of attempted fixes get this input wrong") and
+   must stay true. `ledger.evidence`
    owns this.
 5. **Only proven probes.** A probe with a prior and no record is a guess, and a
    wrong guess primes.
@@ -63,8 +64,6 @@ from caster.steer.render import (
 #: `no-required-line` shows the inputs and withholds the required outputs, which
 #: separates "knowing which input matters" from "being handed the answer".
 DISCLOSURES = ("full", "sample-only", "no-required-line")
-
-DEFAULT_K_FACTS = 2
 
 #: S8's threshold schedule.
 #:
@@ -270,7 +269,8 @@ def s4_examples(examples: Sequence[Example]) -> str:
 
 
 def s5_contract(facts: Sequence[Fact], *, disclosure: str = "full",
-                show_kill_rate: bool = True) -> str:
+                show_kill_rate: bool = True,
+                show_last_output: bool = True) -> str:
     """The counterexample contract. Every line is a requirement the patch must MEET.
 
     There is no "do not", no "already eliminated", no failure-class name, and
@@ -292,12 +292,32 @@ def s5_contract(facts: Sequence[Fact], *, disclosure: str = "full",
     if disclosure == "no-required-line":
         lines = ["Your patch is checked on each of these inputs:"]
     for i, f in enumerate(facts, 1):
-        weight = f" (kills {f.kill_rate:.0%} of attempts)" if show_kill_rate else ""
+        # "kills N% of attempts" was test-prioritisation jargon aimed at a
+        # reader who already knew the field, and "attempts" named nothing the
+        # model could see. Spelled out instead — but still as an ESTIMATE, not
+        # a tally, because the number is the Beta posterior and not the
+        # observed frequency: k=1,n=1 shows 43% where the tally is 100%, and
+        # k=4,n=8 shows 43% where the tally is 50%. "N% of your attempts got
+        # this wrong" would be false in both. See prompt rule 4.
+        weight = (f" — an estimated {f.kill_rate:.0%} of attempted fixes "
+                  f"get this input wrong" if show_kill_rate else "")
         lines.append(f"\n  Input #{i}{weight}:")
         lines.append(render_input(f.input_text))
         if disclosure != "no-required-line":
             lines.append(render_required(f.required))
-        if f.last_status is not None:
+        if f.last_status is not None and show_last_output:
+            # The one line in S5 that puts the WRONG answer, verbatim, into the
+            # context immediately before generation. It is an observation and
+            # not a prohibition, so prompt rule 1 does not forbid it — but Rana
+            # (arXiv 2601.08070), measuring Qwen2.5-7B-Instruct, finds 87.5% of
+            # negative-constraint failures are PRIMING: naming the target
+            # activates it, and failures attend more to the target mention
+            # (TMF 0.205) than to the negation cue (NF 0.141). That mechanism
+            # is about token activation in context, not about a sentence's
+            # logical form, so it plausibly reaches this line too. "Plausibly"
+            # is why `show_last_output` is an ARM (`km+steer-nolast`) and not a
+            # deletion: the paper measures instructions, this is not one, and
+            # the extrapolation has to be priced rather than assumed.
             lines.append(
                 f"    your last attempt "
                 f"{render_observation(f.last_status, f.last_output, f.last_error_type, f.last_error_message, f.last_output_len)}"
@@ -372,7 +392,16 @@ def s7_output_format() -> str:
 
 
 def s8_sampling(k_candidates: int, threshold: float | None) -> str:
-    """Verbalized sampling. Replaces S7's tail.
+    """Verbalized sampling, in its **CoT** form. Replaces S7's tail.
+
+    The reasoning paragraph is not decoration either. Zhang et al. (ICML 2026,
+    arXiv 2510.01171) measure a "cognitive burden": asking a SMALL model for a
+    list — plain Sequence, Multi-turn, or bare VS-Standard — costs output
+    quality, and only VS-CoT and VS-Multi recover it, while the diversity gain
+    itself runs 1.5-2x larger on large models than on small ones. The proposer
+    here is a 7B coder, smaller than either model class in that figure, so the
+    bare VS-Standard this used to render was the one variant their Figure 3f
+    says a model this size cannot afford.
 
     Ask for a *distribution*, not an instance. The probability is not
     decoration — it is what makes the request distribution-level; asking for a
@@ -384,10 +413,13 @@ def s8_sampling(k_candidates: int, threshold: float | None) -> str:
     if threshold is not None:
         tail = f" Only include candidates whose probability is below {threshold:g}."
     return (
-        f"Generate {k_candidates} different candidate corrections of the whole "
-        f"program, each with the probability you would assign to it being the "
-        f"correct fix.{tail}\n"
-        f"Format each one exactly like this, and output nothing else:\n"
+        f"First work out, in one short paragraph, what could be wrong with the "
+        f"program and which distinct repairs are plausible. Then generate "
+        f"{k_candidates} different candidate corrections of the whole program, "
+        f"each with the probability you would assign to it being the correct "
+        f"fix.{tail}\n"
+        f"Put the paragraph first, then the candidates, formatted exactly like "
+        f"this and with nothing else after them:\n"
         f"### Candidate <n> (probability: <p>)\n"
         f"```python\n<the whole corrected program>\n```"
     )
@@ -434,6 +466,7 @@ def build(
     steer_on: bool = False,
     disclosure: str = "full",
     show_kill_rate: bool = True,
+    show_last_output: bool = True,
     k_candidates: int = 1,
     vs_schedule: bool = False,
     steer_mode: str = "contract",
@@ -465,7 +498,9 @@ def build(
             s5 = s5_exclusion(facts)
             tag = "S5x"
         else:
-            s5 = s5_contract(facts, disclosure=disclosure, show_kill_rate=show_kill_rate)
+            s5 = s5_contract(facts, disclosure=disclosure,
+                             show_kill_rate=show_kill_rate,
+                             show_last_output=show_last_output)
             tag = "S5"
         if s5:
             sections.append(s5)

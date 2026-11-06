@@ -69,6 +69,7 @@ program, so nothing is excluded — is correct and irrelevant: this is
 | 13 | `km+exclusion` | the negative block | RQ3 — the thing being replaced |
 | 14 | `km+chat` | full transcript, ChatRepair-style | RQ3 — the published comparator |
 | 15 | `km+steer-k1` / `km+steer-k2` | k ∈ {1,2} against a default of 3 | RQ4 |
+| 16 | `km+steer-nolast` | the contract without the quoted wrong output | RQ4 |
 | 16 | `km+steer-sample` | disclosure `sample-only` | RQ4 |
 | 17 | `km+steer-noreq` | disclosure `no-required-line` | RQ4 |
 | 18 | `km+steer+vs` | contract + verbalized sampling | sensitivity — a different intervention; the paper does not claim it |
@@ -385,6 +386,17 @@ ARMS: dict[str, Arm] = {a.arm_id: a for a in [
         "7.0%, and whether deduplication pulls that back is exactly what this "
         "pair now has to answer. If it does not, the default is wrong",
         overrides={**_STEER, "k_facts": 2}),
+    Arm(16, "km+steer-nolast", "km", "B", "RQ4",
+        "the contract WITHOUT the line that quotes what the last attempt "
+        "printed. That line is the only place S5 puts a wrong answer verbatim "
+        "into the context right before generation. Rana (arXiv 2601.08070) "
+        "measures 87.5% of negative-constraint failures on Qwen2.5-7B to be "
+        "PRIMING — naming the target activates it, and failures attend more to "
+        "the target mention (0.205) than to the negation cue (0.141). That is "
+        "a result about INSTRUCTIONS and this line is an observation, so the "
+        "extrapolation is plausible and unproven; this arm prices it instead "
+        "of assuming it either way",
+        overrides={**_STEER, "show_last_output": False}),
     Arm(16, "km+steer-sample", "km", "B", "RQ4",
         "disclosure by NAME, not by kill rate — measured exploitability 0.0% (0/273)",
         overrides={**_STEER, "disclosure": "sample-only"}),

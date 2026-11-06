@@ -968,3 +968,100 @@ near-duplicates pulls that back is exactly what `km+steer-k2` vs `km+steer` now
 has to answer. If it does not, the default is wrong and reverts to 2. Nothing
 here should be read as "k=3 is better"; it is "k=3 is now the thing being
 tested", and the arm that would refute it is in the grid.
+
+## 37. Two prompt changes the literature argues for, and one it does not
+
+**S8 renders VS-CoT, not VS-Standard.** Zhang et al. (ICML 2026, arXiv
+2510.01171) measure a *cognitive burden*: asking a SMALL model for a list —
+plain Sequence, Multi-turn, or bare VS-Standard — costs output quality, and
+only the VS-CoT and VS-Multi variants recover it. The diversity gain itself
+runs 1.5–2× larger on large models than on small ones. Our proposer is a 7B
+coder, smaller than either class in their Figure 3, so the bare list prompt
+this used to render was the one variant a model this size cannot afford. S8
+now asks for a short reasoning paragraph first, then the k candidates with
+probabilities. The probability is still what makes the request
+distribution-level; dropping it reverts to a list prompt and loses the gain.
+
+**`show_last_output` is an arm, not a deletion.** The line
+`your last attempt printed \`12\`` is the only place S5 puts a WRONG answer,
+verbatim, into the context immediately before generation. Rana (arXiv
+2601.08070), measuring Qwen2.5-7B-Instruct — our proposer's family — finds
+87.5% of negative-constraint failures are **priming**: naming the target
+activates rather than suppresses it, failures attend more to the target
+mention (TMF 0.205) than to the negation cue (NF 0.141), and activation
+patching puts the cause in layers 23–27. The honest reading is that this is a
+result about *instructions*, and our line is an *observation*, so the
+mechanism — token activation in context, not sentential form — plausibly
+reaches it but has not been shown to. `km+steer-nolast` prices the
+extrapolation instead of acting on it. It is also the cheapest arm in Block B
+to justify: the field is already separate on `Fact`.
+
+**What we are NOT copying: MANIPLE.** Parasaram et al. (arXiv 2404.05520)
+settle three things that matter here. Fact utility is **non-monotonic** —
+pass@1 plateaus between 2 and 5 facts and then falls, and using all seven
+facts fixed 12 fewer bugs than the best subset (−8.2% pass@1). There is **no
+universally optimal fact set**; per-bug selection beat the best fixed set by
+17%. And **selection matters more than ordering** (subset variance 0.07–0.34
+against permutation variance 0.24–0.31), which is why no effort goes into
+where S5 sits in the prompt. Their solution, MANIPLE, is a random forest
+trained offline on bug features. We do not copy it: it needs training data and
+would cost the "zero learning, in-episode only" property that is the whole
+cheapness claim. Our ledger already IS a per-task selector, earned online —
+Finding 3 is the citation that justifies it, not a blueprint to imitate.
+
+**What is still owed.** Parasaram et al. also measure prompt LENGTH against
+pass@1 at Spearman −0.18, p < 10⁻¹²⁹. §4.4's argument that the cost term is
+"deliberately absent" from `hintscore` is right about CPU and silent about
+tokens: `legibility` is a 1.0/0.45 step at 400 characters, so a 380-character
+input and a 40-character one score identically while costing 9× the tokens. A
+continuous token term — `K × legibility / tokens^δ`, with δ swept like `c` —
+is the change that evidence supports and that is not yet made.
+
+## 38. A CONFIRMED timeout is servable; a single one still is not
+
+The semantics were never the blocker: `ProbeVerdict.refuted` is already True
+for `timeout`, so a timeout observed live ends the round and counts as a kill.
+What blocked the pilot was **servability** — `VerdictStore.get()` refused every
+stored timeout, so `--replay-only` could not be satisfied by one. On the pilot
+that cost **59 cells across 3 tasks**, one of which (`abc229_e/44646979`,
+repair rate 0.0, pool 37) is in the dominant region.
+
+**The quarantine's reason stands, and is why this is a gate and not a
+deletion.** `protocol_sha` covers the interpreter, the clock, the recursion
+ceiling and the normalisation. It cannot cover machine speed or concurrent
+load, which are the actual inputs to a wall-clock timeout, and the store is
+cross-run and cross-host by design. A single timeout is evidence about a
+machine. `jitter.jsonl` already holds a real `['pass', 'timeout']` flip.
+
+**The rule.** A stored `timeout` is servable only when `timeout_repeats >=
+REPEATS_BEFORE_HALT` — that many consecutive timeouts of one (patch, probe) on
+one host — and only when the cell asks for it. Still not proof: back-to-back
+repeats sample one machine state (DECISIONS 27). That is exactly why the count
+is recorded on the entry and the switch is in the cell key.
+
+**The bug this also fixes.** No timeout could ever accumulate evidence.
+`_measure` returned early when the stored and fresh verdicts agreed, so a
+re-audit of a timed-out pair timed out, agreed, and stopped — forever at one
+observation, forever unservable, re-executed on every pass. The confirmation
+loop now keeps going until the entry reaches `REPEATS_BEFORE_HALT` or a repeat
+says something else, in which case the conclusive verdict wins and the pair
+becomes servable the ordinary way.
+
+**Why `serve_stable_timeouts` is a CELL field and not a protocol field.** It
+changes what a scan sees, which argues for `protocol_fields`. Putting it there
+would change `protocol_sha` and discard 33,066 perfectly good verdicts over a
+flag that does not alter a single one of them — the verdict on disk is
+identical in both regimes. In the cell key it keeps the two regimes from
+pooling, which is the whole requirement, and costs nothing. `KEY_VERSION` 6→7.
+
+**What it buys and what it is.** ConDefects is built from AtCoder, where
+exceeding the time limit is a non-accepting verdict, so a confirmed timeout
+refuting a patch is the benchmark's own semantics rather than a convenience.
+Our 10 s clock is not AtCoder's, so the threshold is ours and belongs in the
+threats table beside the confirmed-timeout rate.
+
+**Default True, and it is inert until evidence exists.** Every entry written
+before this field reads `timeout_repeats = 0`, so nothing becomes servable
+until an audit pass confirms it. Turning the default on cannot retroactively
+change a stored verdict; it can only let a confirmation be used once one is
+measured. `--quarantine-timeouts` restores the blanket refusal.

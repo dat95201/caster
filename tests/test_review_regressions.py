@@ -1401,3 +1401,139 @@ def test_the_rule_cannot_fire_on_the_first_probe_of_a_round():
     ran, deferred = _walk(["x", "y"], lambda c, p: True, 2)
     assert ran == ["x", "y"]
     assert "x" not in deferred, "the first probe of a round was deferred"
+
+
+
+# ── the hint-delivery changes the three papers argue for ────────────────────
+
+
+def _fact(**kw):
+    from caster.steer.template import Fact
+    base = dict(input_text="5 3\n", required="14\n", kill_rate=0.43,
+                last_status="wrong", last_output="12", last_error_type=None,
+                last_error_message=None, last_output_len=2)
+    base.update(kw)
+    return Fact(**base)
+
+
+def test_the_kill_rate_reads_as_an_estimate_not_a_tally():
+    """The number is a Beta posterior, so a tally phrasing would be false:
+    k=1,n=1 and k=4,n=8 both display 43% while the tallies are 100% and 50%."""
+    from caster.steer import template
+    out = template.s5_contract([_fact()], show_kill_rate=True)
+    assert "an estimated 43% of attempted fixes get this input wrong" in out
+    assert "kills" not in out
+
+
+def test_show_last_output_removes_the_quoted_wrong_answer():
+    """`km+steer-nolast`. The only place S5 puts a wrong answer verbatim into
+    the context; Rana's priming result motivates pricing it as an arm."""
+    from caster.steer import template
+    with_it = template.s5_contract([_fact()], show_last_output=True)
+    without = template.s5_contract([_fact()], show_last_output=False)
+    assert "your last attempt" in with_it and "`12`" in with_it
+    assert "your last attempt" not in without
+    assert "`12`" not in without
+    # everything else survives: the requirement itself is untouched
+    assert "14" in without and "5 3" in without
+
+
+def test_show_last_output_is_in_the_cell_key():
+    from caster.keys import CellSpec
+    on = CellSpec(task="t", seed=0, policy="km", steer_on=True)
+    off = CellSpec(task="t", seed=0, policy="km", steer_on=True,
+                   show_last_output=False)
+    assert on.key() != off.key()
+
+
+def test_the_vs_block_asks_for_reasoning_before_the_candidates():
+    """VS-CoT, not VS-Standard. Zhang et al. measure a quality cost for bare
+    list prompting on SMALL models that only the CoT variants recover, and the
+    proposer here is a 7B coder."""
+    from caster.steer import template
+    out = template.s8_sampling(5, None)
+    para = out.index("one short paragraph")
+    cand = out.index("### Candidate")
+    assert para < cand, "the reasoning step must come before the candidates"
+    assert "probability" in out
+
+
+def test_km_steer_nolast_ablates_exactly_one_clause():
+    from caster.run import policies
+    base = policies.arm("km+steer").cell("t", 0).as_dict()
+    nolast = policies.arm("km+steer-nolast").cell("t", 0).as_dict()
+    differing = {k for k in base if base[k] != nolast[k]}
+    assert differing == {"policy", "show_last_output"}
+
+
+
+# ── confirmed timeouts become servable ──────────────────────────────────────
+
+
+def _store(tmp_path, **kw):
+    from caster.exec.store import VerdictStore
+    return VerdictStore({"p": 1}, root=tmp_path, **kw)
+
+
+def _write(store, sha, case, verdict, repeats=0):
+    store.put(sha, case, verdict=verdict, output_sha256="x", cpu_s=0.1,
+              timeout_repeats=repeats)
+
+
+def test_an_unconfirmed_timeout_is_still_never_served(tmp_path):
+    """The quarantine's reason is intact: one timeout is evidence about a
+    machine, not about the program."""
+    st = _store(tmp_path, serve_stable_timeouts=True)
+    _write(st, "a" * 64, "001.txt", "timeout", repeats=1)
+    assert st.get("a" * 64, "001.txt") is None
+    assert not st.has_servable("a" * 64, "001.txt")
+
+
+def test_a_confirmed_timeout_is_served(tmp_path):
+    from caster.exec.store import REPEATS_BEFORE_HALT
+    st = _store(tmp_path, serve_stable_timeouts=True)
+    _write(st, "b" * 64, "001.txt", "timeout", repeats=REPEATS_BEFORE_HALT)
+    sv = st.get("b" * 64, "001.txt")
+    assert sv is not None and sv.verdict == "timeout"
+    assert st.has_servable("b" * 64, "001.txt")
+
+
+def test_quarantine_mode_refuses_even_a_confirmed_timeout(tmp_path):
+    from caster.exec.store import REPEATS_BEFORE_HALT
+    st = _store(tmp_path, serve_stable_timeouts=False)
+    _write(st, "c" * 64, "001.txt", "timeout", repeats=REPEATS_BEFORE_HALT)
+    assert st.get("c" * 64, "001.txt") is None
+
+
+def test_entries_written_before_the_field_existed_are_unconfirmed(tmp_path):
+    """`timeout_repeats` is absent on every pilot entry, and absent must read
+    as 0 — unconfirmed — not as servable."""
+    from caster.exec.store import StoredVerdict
+    sv = StoredVerdict.from_dict({"verdict": "timeout", "cpu_s": 1.0})
+    assert sv.timeout_repeats == 0
+    st = _store(tmp_path, serve_stable_timeouts=True)
+    assert not st._servable(sv)
+
+
+def test_a_timeout_still_refutes(tmp_path):
+    """Unchanged, and the point: the semantics were never the blocker."""
+    from caster.bench.protocol import ProbeVerdict
+    for status, refuted in (("pass", False), ("wrong", True),
+                            ("crash", True), ("timeout", True)):
+        v = ProbeVerdict(status=status, cpu_s=0.1, tier=0, runs=1)
+        assert v.refuted is refuted
+
+
+def test_serve_stable_timeouts_is_in_the_cell_key():
+    from caster.keys import CellSpec
+    on = CellSpec(task="t", seed=0, policy="km")
+    off = CellSpec(task="t", seed=0, policy="km", serve_stable_timeouts=False)
+    assert on.serve_stable_timeouts is True
+    assert on.key() != off.key(), "two reading regimes must not pool"
+
+
+def test_the_cli_optout_is_a_declared_key_flag():
+    """Invariant 6: a flag in neither declared list fails the build."""
+    from caster.keys import KEY_FLAGS, check_flag_partition
+    assert "quarantine_timeouts" in KEY_FLAGS
+    assert check_flag_partition(["quarantine_timeouts"]) == []

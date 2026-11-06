@@ -63,6 +63,9 @@ def _add_cell_knobs(p: argparse.ArgumentParser) -> None:
                         "already inside one that passed this round; 0 disables")
     p.add_argument("--overlap-min-rej", dest="overlap_min_rej", type=int, default=1,
                    help="refutations a probe needs before it may suppress anything")
+    p.add_argument("--quarantine-timeouts", dest="quarantine_timeouts",
+                   action="store_true",
+                   help="never serve a stored timeout, even a confirmed one. Restores the blanket quarantine; the cell key records which regime ran")
     # The default is read OFF `CellSpec`, not written here. A flag default and
     # a spec default are two places for one value, and they had already drifted:
     # the spec said "rank" while this said "hash", so every CLI run would have
@@ -395,6 +398,7 @@ def _grid(args: argparse.Namespace, frozen: dict[str, Any]) -> Any:
         reasoning_effort=args.reasoning_effort, prior=args.prior,
         cold_start=args.cold_start, explore_p=args.explore_p,
         overlap_thr=args.overlap_thr, overlap_min_rej=args.overlap_min_rej,
+        serve_stable_timeouts=not getattr(args, 'quarantine_timeouts', False),
         tie_break=args.tie_break,
         sandbox_timeout=(args.timeout if args.timeout else DEFAULT_TIMEOUT),
     )
@@ -732,7 +736,11 @@ def cmd_audit(args: argparse.Namespace) -> int:
     paths.announce("audit")
     frozen = _frozen()
     adapter = _adapter(args, frozen)
-    store = VerdictStore(protocol_fields(timeout=adapter.timeout))
+    # The audit is what MAKES a timeout confirmed, so it must never be
+    # satisfied by one: serving a confirmed timeout here would stop the
+    # pass that establishes the next confirmation.
+    store = VerdictStore(protocol_fields(timeout=adapter.timeout),
+                         serve_stable_timeouts=False)
     patches = PatchStore()
 
     tasks = list(_csv(args.tasks)) or list(frozen["pool_order"])

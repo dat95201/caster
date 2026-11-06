@@ -67,6 +67,7 @@ class Grid:
     explore_p: float = 0.15
     overlap_thr: float = 0.75
     overlap_min_rej: int = 1
+    serve_stable_timeouts: bool = True
     tie_break: str = "hash"
     #: NOT a cell-key field (Invariant 13 names it as one of the values that
     #: "reach no key at all"), but it changes what a verdict IS — so it must
@@ -80,7 +81,7 @@ class Grid:
     #: not silently retune them. Listed once here so adding a knob to `Grid` and
     #: forgetting to forward it is not possible.
     FORWARDED = ("prior", "cold_start", "explore_p", "overlap_thr",
-                 "overlap_min_rej", "tie_break")
+                 "overlap_min_rej", "serve_stable_timeouts", "tie_break")
 
     def protocol(self) -> dict[str, Any]:
         return protocol_fields(timeout=self.sandbox_timeout)
@@ -311,7 +312,8 @@ def walk(
     the caller exits non-zero with the list. The grid then shows exactly the
     cells phase 1 owes, instead of a cliff at the first one.
     """
-    store = VerdictStore(grid.protocol())
+    store = VerdictStore(grid.protocol(),
+                         serve_stable_timeouts=grid.serve_stable_timeouts)
     patches = PatchStore()
     base = cfg or EpisodeConfig(budget=grid.budget)
     # the refcount needs a producer or it is decoration. A shard registers

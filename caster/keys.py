@@ -164,6 +164,16 @@ class CellSpec:
     #: suppress anything.
     overlap_min_rej: int = 1
     #: "rank" (the default) | "name" | "hash". See `schedule_tie_rank`.
+    #: Whether a CONFIRMED timeout (REPEATS_BEFORE_HALT consecutive timeouts
+    #: of one (patch, probe) on one host) may be served from the verdict store
+    #: instead of re-executed. ConDefects comes from AtCoder, where exceeding
+    #: the limit is a non-accepting verdict, so a confirmed timeout refuting a
+    #: patch is the benchmark's own semantics. It is a CELL field and not a
+    #: protocol field on purpose: the verdict on disk is identical either way,
+    #: so this must not change `protocol_sha` and discard a valid store — but
+    #: it DOES change measured results, so it must keep two regimes from
+    #: pooling. False restores the blanket quarantine.
+    serve_stable_timeouts: bool = True
     tie_break: str = "rank"
 
     # steering knobs; all inert when the policy is unsteered
@@ -178,6 +188,12 @@ class CellSpec:
     k_facts: int = 3
     disclosure: str = "full"
     show_kill_rate: bool = True
+    #: Whether S5 shows what the last attempt actually printed. True is
+    #: the shipped block; `km+steer-nolast` sets it False. It is an arm
+    #: rather than a default because the evidence against it is an
+    #: EXTRAPOLATION — Rana measures negative INSTRUCTIONS priming their
+    #: own target, and this line is an observation, not an instruction.
+    show_last_output: bool = True
     k_candidates: int = 1            # >1 ⇒ verbalized sampling
     vs_schedule: bool = False
     candidate_policy: str = "exploit"
@@ -276,12 +292,14 @@ class CellSpec:
 #: changed, which is exactly what this constant is bumped for — and
 #: `shard.PROTOCOL_FIELDS` now carries `key_version`, so a v3 shard and a v4
 #: shard are a hard stop at merge rather than a silent pool.
-#: v5: `overlap_thr` and `overlap_min_rej` joined the spec (DECISIONS 33) and
+#: v7: `serve_stable_timeouts` joined the spec (DECISIONS 38).
+#: v6: `show_last_output` joined the spec (DECISIONS 37). v5: `overlap_thr`
+#: and `overlap_min_rej` joined the spec (DECISIONS 33) and
 #: `k_facts` defaulted 2 → 3 (DECISIONS 34). All three change what a cell IS,
 #: so every cell is re-keyed at once rather than letting an unwritten field
 #: read as a default in an analysis. Every pilot row is v4 or older and does
 #: not pool with anything produced from here on.
-KEY_VERSION = 5
+KEY_VERSION = 7
 
 
 #: How the schedule breaks a tie between probes of EQUAL score.
@@ -380,6 +398,10 @@ KEY_FLAGS: frozenset[str] = frozenset(
     "policies",   # plural on the CLI, `policy` per cell
     "seeds",      # plural on the CLI, `seed` per cell
     "tasks",      # the subset of the frozen pool to walk; each task is its own cell
+    # The CLI exposes the NEGATIVE of `serve_stable_timeouts`, because the
+    # default is to serve and a flag that does nothing by default is clearer
+    # written as the opt-out. It is still the same cell field.
+    "quarantine_timeouts",
 })
 
 NONKEY_FLAGS: frozenset[str] = frozenset({

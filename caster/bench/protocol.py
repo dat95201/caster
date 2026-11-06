@@ -77,6 +77,10 @@ class ProbeVerdict:
     error_type: str | None = None
     error_message: str | None = None
     tier: int = 0
+    #: Consecutive `timeout` observations on one host behind this verdict.
+    #: Set by `caster.exec.verify._measure`'s confirmation loop and written
+    #: onto the store entry, which is what makes a confirmed timeout servable.
+    timeout_repeats: int = 0
     runs: int = 1          # program executions this verdict cost
 
     @property

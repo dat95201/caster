@@ -45,6 +45,7 @@ def test_every_arm_in_the_spec_exists():
                "km-cs-q75", "km-bucket", "km-explore0", "km-ov0"}
     block_b = {"km+steer", "km+steer-pass", "km+exclusion", "km+chat",
                "km+steer-k1", "km+steer-k2", "km+steer-sample", "km+steer-noreq",
+               "km+steer-nolast",
                "km+steer+vs"}
     assert block_a | block_b == set(policies.ARMS)
     assert {a.arm_id for a in policies.BLOCK_A} == block_a

@@ -272,6 +272,7 @@ def run_episode(
             steer_on=spec.steer_on,
             disclosure=spec.disclosure,
             show_kill_rate=spec.show_kill_rate,
+            show_last_output=spec.show_last_output,
             k_candidates=spec.k_candidates,
             vs_schedule=spec.vs_schedule,
             steer_mode=spec.steer_mode,

@@ -124,6 +124,10 @@ class StoredVerdict:
     host: str
     source: str = "scan"          # "audit" | "scan" | "remeasure"
     concurrency: int | None = None
+    #: Consecutive `timeout` observations of this (patch, probe) on ONE host.
+    #: 0 on every entry written before this field existed, which is the safe
+    #: reading: unconfirmed, therefore not servable. See `get`.
+    timeout_repeats: int = 0
     #: The head of what the candidate printed, and how it failed. Steering-only;
     #: see OUTPUT_HEAD_CHARS.
     output_head: str | None = None
@@ -148,6 +152,9 @@ class StoredVerdict:
             output_len=d.get("output_len"),
             error_type=d.get("error_type"),
             error_message=d.get("error_message"),
+            # Absent on every entry written before the field existed, and 0 is
+            # the safe reading of absent: unconfirmed, therefore not servable.
+            timeout_repeats=int(d.get("timeout_repeats", 0) or 0),
         )
 
 
@@ -247,7 +254,15 @@ class VerdictStore:
     dedicated pass: one writer, one concurrency, one cost table.
     """
 
-    def __init__(self, protocol: dict[str, Any], root: pathlib.Path | None = None) -> None:
+    def __init__(self, protocol: dict[str, Any], root: pathlib.Path | None = None,
+                 *, serve_stable_timeouts: bool = True) -> None:
+        #: Whether a CONFIRMED timeout may stand in for an execution. The flag
+        #: is deliberately NOT in `protocol`: the verdict on disk is identical
+        #: either way, so putting it there would change `protocol_sha` and
+        #: throw away a store that is still perfectly valid. It belongs in the
+        #: CELL key, where it keeps two reading regimes from pooling without
+        #: invalidating a single measurement. See `_servable`.
+        self.serve_stable_timeouts = bool(serve_stable_timeouts)
         self.protocol = dict(protocol)
         self.protocol_sha = protocol_sha(self.protocol)
         self.root = pathlib.Path(root or paths.VERDICT_DIR) / self.protocol_sha
@@ -310,25 +325,53 @@ class VerdictStore:
         """The raw entry, timeouts included. For audits and the cost table only."""
         return self._load(patch_sha).get(case_name)
 
+    def _servable(self, sv: StoredVerdict | None) -> bool:
+        """Whether this entry may stand in for an execution.
+
+        Everything but a `timeout` always may. A `timeout` may only when it has
+        been CONFIRMED — `REPEATS_BEFORE_HALT` consecutive timeouts of the same
+        (patch, probe) on one host — and only when this store was asked to
+        serve confirmed ones.
+
+        The quarantine's reason is intact and is the reason for the gate rather
+        than against it. `protocol_sha` covers the interpreter, the clock, the
+        recursion ceiling and the normalisation; it cannot cover machine speed
+        or concurrent load, which are the actual inputs to a wall-clock
+        timeout. A single timeout is therefore evidence about a machine. Three
+        in a row on one host is evidence about the program — still not proof,
+        because back-to-back repeats sample one machine state (DECISIONS 27),
+        which is why the count is recorded on the entry and the switch is in
+        the cell key: a run that serves them and a run that does not must never
+        pool.
+
+        What this buys: ConDefects is built from AtCoder, where exceeding the
+        time limit IS a non-accepting verdict, so a confirmed timeout refuting
+        a patch is the benchmark's own semantics and not a convenience. What it
+        costs: on the pilot, 361 of 367 timeouts sat in three tasks, and
+        quarantining them cost 59 cells and one task of the dominant region.
+        """
+        if sv is None:
+            return False
+        if sv.verdict != "timeout":
+            return True
+        return (self.serve_stable_timeouts
+                and sv.timeout_repeats >= REPEATS_BEFORE_HALT)
+
     def get(self, patch_sha: str, case_name: str) -> StoredVerdict | None:
         """A *servable* entry, or None.
 
-        A `timeout` entry is never servable — see the module docstring. This is
-        the only read a scan may use, and it increments `verdict_hits` so
+        The only read a scan may use. It increments `verdict_hits` so
         Invariant 9's arithmetic stays honest.
         """
         sv = self._load(patch_sha).get(case_name)
-        if sv is None:
-            return None
-        if sv.verdict == "timeout":
+        if not self._servable(sv):
             return None
         self.verdict_hits += 1
         return sv
 
     def has_servable(self, patch_sha: str, case_name: str) -> bool:
         """Like `get` but without counting a hit. For `--dry-run` planning."""
-        sv = self._load(patch_sha).get(case_name)
-        return sv is not None and sv.verdict != "timeout"
+        return self._servable(self._load(patch_sha).get(case_name))
 
     # -- writes --------------------------------------------------------------
 
@@ -346,6 +389,7 @@ class VerdictStore:
         output_len: int | None = None,
         error_type: str | None = None,
         error_message: str | None = None,
+        timeout_repeats: int = 0,
         flush: bool = True,
     ) -> StoredVerdict:
         """Record a freshly measured verdict, checking for divergence on the way in.
@@ -378,6 +422,7 @@ class VerdictStore:
             output_len=output_len,
             error_type=error_type,
             error_message=error_message,
+            timeout_repeats=int(timeout_repeats),
         )
         # An arm scan does not get to restate an audited cost — but ONLY
         # when it is restating the same verdict. An audited `timeout` whose
