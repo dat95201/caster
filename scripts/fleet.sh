@@ -3,6 +3,7 @@
 # A fleet: N shards of one stage, launched into the background on one machine,
 # and one place to ask where they are.
 #
+#   bash scripts/fleet.sh launch --stage propose --shards 6 -- --policies no-mem
 #   bash scripts/fleet.sh launch --shards 6 -- --policies km,natural --budget 20
 #   bash scripts/fleet.sh status
 #   bash scripts/fleet.sh tail 3          # or `tail` for every shard's last lines
@@ -70,8 +71,17 @@ usage() {
   sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   cat <<'USAGE'
 
-  launch  --shards N [--from A --to B] [--stagger S] [-- ...]
+  launch  --shards N [--stage propose|evaluate] [--from A --to B] [--stagger S] [-- ...]
 
+      --stage       which verb the shards run. `evaluate` (phase 2) is the
+                    default. `propose` is PHASE 1 and it is not the same stage
+                    wearing a flag: it writes one level deeper, where the
+                    merge cannot reach it, and it resumes against its own
+                    done-index. Running phase 1 as `evaluate --force-full-budget`
+                    — which is what this script used to force — put phase-1
+                    rows in the evidence namespace and marked those cells done,
+                    so phase 2 skipped the arm and merged phase-1 rows in its
+                    place.
       --from/--to   1-based inclusive, over the stage's own universe. Omit both
                     to take all of it; the size is ASKED of the stage rather
                     than written down here.
@@ -93,10 +103,11 @@ USAGE
 # Not from here. A dry run also proves the ARGUMENTS are good before six
 # processes discover otherwise one at a time.
 universe_size() {
+  local stage="$1"; shift
   local out n
-  out="$($CASTER evaluate --dry-run "$@" 2>&1)" || {
+  out="$($CASTER "$stage" --dry-run "$@" 2>&1)" || {
     echo "$out" >&2
-    die "caster evaluate --dry-run refused these arguments; fix that before fanning out"
+    die "caster $stage --dry-run refused these arguments; fix that before fanning out"
   }
   n="$(sed -n 's/^universe  *\([0-9][0-9]*\) cells.*/\1/p' <<<"$out" | head -1)"
   [[ "$n" =~ ^[0-9]+$ ]] || { echo "$out" >&2; die "could not read the universe size out of --dry-run"; }
@@ -104,10 +115,11 @@ universe_size() {
 }
 
 cmd_launch() {
-  local shards=0 from=0 to=0 stagger="$STAGGER"
+  local shards=0 from=0 to=0 stagger="$STAGGER" stage="evaluate"
   local -a forward=()
   while (($#)); do
     case "$1" in
+      --stage)  stage="$2";  shift 2 ;;
       --shards) shards="$2"; shift 2 ;;
       --from)   from="$2";   shift 2 ;;
       --to)     to="$2";     shift 2 ;;
@@ -117,9 +129,11 @@ cmd_launch() {
     esac
   done
   ((shards >= 1)) || die "--shards must be at least 1"
+  [[ "$stage" == "propose" || "$stage" == "evaluate" ]] \
+    || die "--stage must be propose or evaluate, got '$stage'"
 
   local universe
-  universe="$(universe_size "${forward[@]}")"
+  universe="$(universe_size "$stage" "${forward[@]}")"
   ((from == 0)) && from=1
   ((to == 0)) && to="$universe"
   ((to <= universe)) || die "--to $to is past the universe ($universe cells)"
@@ -181,16 +195,26 @@ for lo, hi in plan_ranges($from, $to, $shards):
   for r in "${ranges[@]}"; do
     read -r lo hi <<<"$r"
     local log="$FLEET_ROOT/shard-$(printf '%02d' "$i").log"
+    local rc="$log.rc"
     : >"$log"
+    rm -f "$rc"
+    # The shard runs inside a subshell that records its EXIT CODE. Without this
+    # `status` can only ask whether the pid is alive, so a shard killed at its
+    # first cell and a shard that walked every cell both render as "done" —
+    # which is not a record of anything. The rc file is written whole, after
+    # the process ends, so its absence means "still running or killed by a
+    # signal the shell never saw" and is reported as such rather than as
+    # success.
     # shellcheck disable=SC2086
-    nohup $CASTER evaluate --shard "$i" --first "$lo" --last "$hi" \
-          "${forward[@]}" >>"$log" 2>&1 &
+    nohup bash -c '"$@" >>"'"$log"'" 2>&1; printf "%s" "$?" > "'"$rc"'"' \
+          _ $CASTER "$stage" --shard "$i" --first "$lo" --last "$hi" \
+          "${forward[@]}" >/dev/null 2>&1 &
     local pid=$!
     entries+=("$(python3 -c "
 import json,sys
 print(json.dumps({'index': $i, 'first': $lo, 'last': $hi, 'pid': $pid,
-                  'command': ['caster','evaluate','--shard','$i','--first','$lo','--last','$hi'],
-                  'log': '$log'}))")")
+                  'command': ['caster','$stage','--shard','$i','--first','$lo','--last','$hi'],
+                  'log': '$log', 'rc': '$rc'}))")")
     echo "fleet: shard $i  [$lo..$hi]  pid $pid  -> $log"
     i=$((i + 1))
     sleep "$stagger"
@@ -210,22 +234,62 @@ PY
 cmd_status() {
   [[ -f "$MANIFEST" ]] || die "no manifest at $MANIFEST — nothing launched from here"
   python3 - "$MANIFEST" <<'PY'
-import json, os, pathlib, sys, time
+import json, os, pathlib, re, sys, time
 doc = json.loads(pathlib.Path(sys.argv[1]).read_text())
 print(f"universe {doc['universe']} cells · launched "
       f"{time.strftime('%H:%M:%S', time.localtime(doc['at']))}")
+
+PROGRESS = re.compile(r"^\s*\[(\d+)/(\d+)\]")
+worst = 0
 for e in doc["shards"]:
+    alive = True
     try:
         os.kill(int(e["pid"]), 0)
-        state = "alive"
     except (OSError, ValueError):
-        state = "done "
+        alive = False
+
+    # The exit code is the whole point: a shard killed at its first cell and a
+    # shard that walked every cell are indistinguishable by pid liveness alone.
+    rc_path = pathlib.Path(e.get("rc") or (e["log"] + ".rc"))
+    rc = None
+    if rc_path.is_file():
+        try:
+            rc = int(rc_path.read_text().strip() or "-1")
+        except ValueError:
+            rc = -1
+
+    if alive:
+        state = "alive  "
+    elif rc == 0:
+        state = "OK     "
+    elif rc is None:
+        # No rc file and no process: the shell never saw an exit. On a notebook
+        # runtime that is almost always the OOM killer or a lost session.
+        state = "KILLED "
+        worst = 1
+    else:
+        state = "FAIL:%-2d" % rc
+        worst = 1
+
+    walked = total = 0
     log = pathlib.Path(e["log"])
-    last = ""
     if log.is_file():
-        lines = [l for l in log.read_text(errors="replace").splitlines() if l.strip()]
-        last = lines[-1][:88] if lines else ""
-    print(f"  s{e['index']:02d} {state} [{e['first']}..{e['last']}] pid {e['pid']}  {last}")
+        for line in log.read_text(errors="replace").splitlines():
+            m = PROGRESS.match(line)
+            if m:
+                walked, total = int(m.group(1)), int(m.group(2))
+    cells = "%d/%d cells" % (walked, total) if total else "no cell started"
+    note = ""
+    if not alive and total and walked < total:
+        note = "  <-- STOPPED %d cells SHORT" % (total - walked)
+        worst = 1
+    if not alive and not total:
+        note = "  <-- died before the first cell; read the log"
+        worst = 1
+    print("  s%02d %s [%s..%s] pid %s  %s%s"
+          % (e["index"], state, e["first"], e["last"], e["pid"], cells, note))
+
+raise SystemExit(worst)
 PY
 }
 
@@ -254,10 +318,30 @@ for e in doc["shards"]:
 raise SystemExit(0 if alive else 1)
 PY
   do sleep 10; done
-  cmd_status
-  echo
-  echo "fleet: every process exited — which says EXACTLY that and nothing more."
-  echo "       Coverage is \`caster merge\` (Invariant 12)."
+  # A shard that skipped cells on a cache miss exits 3, and `status` prints
+  # that code — but the list of what it owed is in the log, and a fleet log is
+  # read once. Surface it here, where the operator is already looking.
+  local skipped
+  skipped="$(grep -h "SKIPPED on a cache miss" "$FLEET_ROOT"/shard-*.log 2>/dev/null || true)"
+  if [[ -n "$skipped" ]]; then
+    echo
+    echo "fleet: cells were SKIPPED on a cache miss — phase 1 owes them:"
+    sed 's/^/       /' <<<"$skipped"
+    echo "       They are unwritten and unindexed; re-issue this launch once"
+    echo "       phase 1 (or \`caster audit\`) has filled the gap."
+  fi
+  if cmd_status; then
+    echo
+    echo "fleet: every shard exited 0 and walked its whole range."
+    echo "       That is still not coverage — \`caster merge\` is (Invariant 12)."
+  else
+    echo
+    echo "fleet: AT LEAST ONE SHARD DID NOT FINISH. Nothing below this line is a"
+    echo "       complete grid. Read the log of every shard not marked OK:"
+    echo "         bash scripts/fleet.sh tail N"
+    echo "       Re-issuing the identical launch resumes from cells.done."
+    return 1
+  fi
 }
 
 cmd_stop() {

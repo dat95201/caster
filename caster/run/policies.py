@@ -23,7 +23,8 @@ a replay.
 | 5 | `cost-only` | m̂ ascending, no K | RQ2 — the cost marginal |
 | 6 | `kill-only` | K descending, no cost | RQ2 — the kill-rate marginal |
 | 7 | `coverage` | additional-greedy over reference coverage | RQ1 — the traditional prioritiser |
-| 8 | `km` | `K/m̂`, cold start `max`, `explore_p = 0.15` | RQ1 — the proposal |
+| 8 | `km` | `K/m̂`, cold start `max`, `explore_p = 0.15`, `overlap_thr = 0.75` | RQ1 — the proposal |
+| 8a | `km-ov0` | `km` with the overlap rule OFF | RQ2 — prices the overlap term |
 | 9 | `km-cs-median` / `km-cs-q75` | cold start `median` / `q₀.₇₅` | sensitivity |
 | 10 | `km-bucket` | proven bucket, then unseen, then survived-only | sensitivity — the structural alternative |
 | 11 | `km-explore0` | `km` with `explore_p = 0` | sensitivity, and a precondition of RQ4 |
@@ -67,7 +68,7 @@ program, so nothing is excluded — is correct and irrelevant: this is
 | 12 | `km+steer` | contract, k=2, disclosure `full` | RQ3 |
 | 13 | `km+exclusion` | the negative block | RQ3 — the thing being replaced |
 | 14 | `km+chat` | full transcript, ChatRepair-style | RQ3 — the published comparator |
-| 15 | `km+steer-k1` / `km+steer-k3` | k ∈ {1,3} | RQ4 |
+| 15 | `km+steer-k1` / `km+steer-k2` | k ∈ {1,2} against a default of 3 | RQ4 |
 | 16 | `km+steer-sample` | disclosure `sample-only` | RQ4 |
 | 17 | `km+steer-noreq` | disclosure `no-required-line` | RQ4 |
 | 18 | `km+steer+vs` | contract + verbalized sampling | sensitivity — a different intervention; the paper does not claim it |
@@ -222,7 +223,14 @@ def order_coverage(ctx: PolicyContext) -> list[str]:
 
 
 def order_km(ctx: PolicyContext) -> list[str]:
-    """`K/m̂`. The proposal. the SCHEDULE, including `explore_p`."""
+    """`K/m̂`. The proposal. the SCHEDULE, including `explore_p`.
+
+    This returns the round's STARTING order. The overlap deferral is not here
+    and cannot be: it depends on which probes have already passed against THIS
+    candidate, which is known only as the scan walks. `caster.exec.verify.scan`
+    applies it against the same ledger, so an ordering function stays a pure
+    function of the ledger and the pool — which is what makes an arm free.
+    """
     return ctx.ledger.schedule(_usable(ctx))
 
 
@@ -289,7 +297,11 @@ class Arm:
         return CellSpec(**fields)
 
 
-_STEER = {"steer_on": True, "k_facts": 2, "disclosure": "full"}
+#: `k_facts = 3`, matching the `CellSpec` default. The selector DEDUPLICATES
+#: (DECISIONS 34), so three REQUESTED facts render about what two
+#: undeduplicated facts rendered before. The sweep below therefore brackets 3
+#: from below with k ∈ {1, 2} rather than from both sides around 2.
+_STEER = {"steer_on": True, "k_facts": 3, "disclosure": "full"}
 
 ARMS: dict[str, Arm] = {a.arm_id: a for a in [
     # ── Block A ─────────────────────────────────────────────────────────────
@@ -314,7 +326,8 @@ ARMS: dict[str, Arm] = {a.arm_id: a for a in [
     Arm(5, "cost-only", "cost-only", "A", "RQ2", "the cost marginal"),
     Arm(6, "kill-only", "kill-only", "A", "RQ2", "the kill-rate marginal"),
     Arm(7, "coverage", "coverage", "A", "RQ1", "the traditional prioritiser"),
-    Arm(8, "km", "km", "A", "RQ1", "the proposal"),
+    Arm(8, "km", "km", "A", "RQ1",
+        "the proposal: K/m̂, with the overlap deferral on top"),
     Arm(9, "km-cs-median", "km", "A", "sensitivity",
         "cold start = median of observed costs — the one that makes an unseen "
         "probe look cheap and costs a full-pool sweep at round 2",
@@ -322,6 +335,16 @@ ARMS: dict[str, Arm] = {a.arm_id: a for a in [
     Arm(9, "km-cs-q75", "km", "A", "sensitivity", "cold start = q₀.₇₅",
         overrides={"cold_start": "q75"}),
     Arm(10, "km-bucket", "km-bucket", "A", "sensitivity", "the structural alternative"),
+    Arm(11, "km-ov0", "km", "A", "RQ2",
+        "the overlap term, ablated. `km` defers a probe whose rejection set is "
+        "already ≥75% inside one that PASSED this round; this arm does not, so "
+        "the pair prices exactly that clause and nothing else. Replayed over "
+        "the pilot's kill matrix the term is worth −0.12% CPU, CI95 "
+        "[−1.6, +1.3], on episode-local evidence — NOT distinguishable from "
+        "zero, and the honest way to read this arm — and −6.3% [−13.5, −0.6] "
+        "when the rejection sets are seeded from the audit table, which is a "
+        "DIFFERENT experiment and not this arm",
+        overrides={"overlap_thr": 0.0}),
     Arm(11, "km-explore0", "km", "A", "sensitivity",
         "no exploration — and a PRECONDITION of RQ5: without it a task whose "
         "first probe kills everything reaches the prompt with one proven fact, "
@@ -354,9 +377,14 @@ ARMS: dict[str, Arm] = {a.arm_id: a for a in [
         overrides={**_STEER, "steer_mode": "chat"}),
     Arm(15, "km+steer-k1", "km", "B", "RQ4", "k = 1 fact",
         overrides={**_STEER, "k_facts": 1}),
-    Arm(15, "km+steer-k3", "km", "B", "RQ4",
-        "k = 3 facts — leakage 16.8% against k=2's 7.0%",
-        overrides={**_STEER, "k_facts": 3}),
+    Arm(15, "km+steer-k2", "km", "B", "RQ4",
+        "k = 2 facts. The sweep's upper rung used to be k=3 against a default "
+        "of 2; with the default at 3 this is the rung BELOW it. The number "
+        "that moved the default is a dedup argument, not a leakage "
+        "measurement: k=3 was measured at 16.8% hint leakage against k=2's "
+        "7.0%, and whether deduplication pulls that back is exactly what this "
+        "pair now has to answer. If it does not, the default is wrong",
+        overrides={**_STEER, "k_facts": 2}),
     Arm(16, "km+steer-sample", "km", "B", "RQ4",
         "disclosure by NAME, not by kill rate — measured exploitability 0.0% (0/273)",
         overrides={**_STEER, "disclosure": "sample-only"}),

@@ -94,7 +94,22 @@ VS_THRESHOLD_SCHEDULE: tuple[tuple[int, float | None], ...] = (
 CHARS_PER_TOKEN = 3.5
 BUDGET_MARGIN = 1.15
 MIN_BUDGET = 2048
-MAX_BUDGET = 16_000
+#: The chat ceiling. Raised 16_000 -> 32_000 when G6 (`--lines-max`) was
+#: switched off: with no source-length screen the corpus admits programs the
+#: old ceiling could not rewrite, and a budget below what the program needs
+#: produces a reply cut off mid-block on EVERY round of EVERY seed of exactly
+#: those tasks — a `truncated_response` that is a property of this constant,
+#: not of the model. Measured over ConDefects' 2,864 Python faults:
+#:
+#:     out-tokens needed = ceil(len(source) / 3.5 * 1.15)
+#:     median 152 · p95 1,298 · p99 5,871 · max 63,153 (one 192 KB submission)
+#:     > 16,000: 4 programs (0.14%)   > 32,000: 1 program
+#:
+#: So 32_000 is the smallest round ceiling that stops this constant being the
+#: binding constraint on all but one fault in the benchmark. It is NOT free:
+#: `max_tokens` is in the cache key, so the three programs whose budget moves
+#: are re-keyed and redrawn. Nothing else is.
+MAX_BUDGET = 32_000
 # A reasoning model spends hidden tokens out of this same budget before writing
 # a character of the answer, so the chat ceiling would cut the program off
 # mid-rewrite on exactly the longest tasks.
@@ -105,6 +120,41 @@ _REASONING_PREFIXES = ("o1", "o3", "o4", "o5")
 
 def is_reasoning_model(model: str) -> bool:
     return bool(model) and model.split("-", 1)[0] in _REASONING_PREFIXES
+
+
+def output_ceiling(model: str | None = None) -> int:
+    """The largest output budget any single call may request, for this model.
+
+    One function, because the ceiling was written down twice — here and as a
+    bare `16_000` inside `propose.draw` — and the second copy silently clipped
+    a k-candidate draw back to the chat ceiling even on a reasoning model.
+    A ceiling in two places is a ceiling that disagrees with itself.
+    """
+    return MAX_BUDGET_REASONING if (model and is_reasoning_model(model)) else MAX_BUDGET
+
+
+def prompt_tokens_estimate(text: str) -> int:
+    """The same estimate `llm.client.check_window` applies to a built prompt."""
+    return math.ceil(len(text) / CHARS_PER_TOKEN * BUDGET_MARGIN)
+
+
+def window_needed(source: str, model: str | None = None,
+                  overhead_tokens: int = 1200) -> int:
+    """Served context a task needs: whole source in, whole rewrite out.
+
+    Slot S3 carries the entire current source and the reply carries an entire
+    rewrite of it, so the window has to hold BOTH — which is why raising
+    `MAX_BUDGET` alone does not admit a long program. `overhead_tokens` is the
+    rest of the prompt (role, contract, examples, the k-fact block), measured
+    at well under 1,200 tokens on this corpus's longest rendered prompts.
+
+    `caster preflight` reports the admitted tasks whose number exceeds
+    `LLM_CONTEXT_TOKENS`: with G6 off that list is the whole of what "the
+    source does not fit a prompt" now means, and it is a number before the run
+    rather than a `context_overflow` discovered in round 1 of every seed.
+    """
+    return (prompt_tokens_estimate(source) + overhead_tokens
+            + budget_for_source(source, model=model))
 
 
 def budget_for_source(source: str, model: str | None = None) -> int:

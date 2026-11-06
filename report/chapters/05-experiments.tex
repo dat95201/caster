@@ -255,7 +255,10 @@ Name & Order of tests & Answers\\
 \code{coverage}      & Additional-greedy over reference line coverage~\citep{rothermel2001prioritizing} & RQ1\\
 \code{cost-only}     & $\hat{m}$ ascending; no rejection information & RQ4\\
 \code{kill-only}     & $K$ descending; no cost information & RQ4\\
-\textbf{\code{sched}} & $K/\hat{m}^{\,c}$ --- \textbf{the proposed scheduler} & RQ1, RQ3\\
+\textbf{\code{sched}} & $K/\hat{m}^{\,c}$, plus the overlap deferral of
+Section~\ref{sec:overlap} --- \textbf{the proposed scheduler} & RQ1, RQ3\\
+\code{sched-ov0}     & The same, with $\tau = 0$: the overlap deferral switched
+off, so the pair prices that clause and nothing else & RQ4\\
 \midrule
 \code{sched-cs-median} \newline \code{sched-cs-q75} & Cold start at the median or the $75$th percentile instead of the max & sensitivity\\
 \code{sched-bucket}  & Discrete buckets instead of a continuous score & sensitivity\\
@@ -291,12 +294,14 @@ use the proposed scheduler unless the name says otherwise.}
 \toprule
 Name & What the prompt carries after round~1 & Answers\\
 \midrule
-\code{hints}          & $k{=}2$ selected requirements, \textbf{shipped test order} & RQ2, RQ3\\
-\code{sched+hints}    & $k{=}2$ selected requirements \textbf{and} the proposed scheduler & RQ2, RQ3\\
+\code{hints}          & $k{=}3$ selected requirements, \textbf{shipped test order} & RQ2, RQ3\\
+\code{sched+hints}    & $k{=}3$ selected requirements \textbf{and} the proposed scheduler & RQ2, RQ3\\
 \code{exclusion}      & The same facts phrased as a prohibition & RQ2\\
 \code{chat}           & The full conversation transcript, \textsc{ChatRepair}-style~\citep{xia2024chatrepair} & RQ2\\
 \midrule
-\code{hints-k1}, \code{hints-k3} & $k \in \{1,3\}$ instead of $2$ & RQ4\\
+\code{hints-k1}, \code{hints-k2} & $k \in \{1,2\}$ instead of $3$. Read against the
+number of hints \emph{rendered}, not requested: deduplication and a thin pool
+mean the selector returns fewer than $k$ in most sessions & RQ4\\
 \code{hints-sample}   & Disclosure \code{sample-only} & RQ4\\
 \code{hints-noreq}    & Disclosure \code{no-required-line} & RQ4\\
 \bottomrule

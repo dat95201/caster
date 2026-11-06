@@ -211,6 +211,22 @@ def render(summary: dict[str, Any], *, title: str = "CASTER run report",
           _sparkline(survival.get(r["policy"], []))]
          for r in arms], numeric=(2, 3, 4, 5, 6, 7, 8)))
 
+    control = summary.get("control_arm") or {}
+    if control.get("arms"):
+        parts.append("<h2>Unfiltered control arm (reported separately)</h2>")
+        parts.append('<p class="note">A uniform sample over the G1-only '
+                     'survivors a pool-size threshold would have cut. It is the '
+                     'only thing that makes the scope condition <em>checkable</em> '
+                     'rather than asserted, and it is pre-registered as "reported '
+                     'whatever it shows". These faults are not in '
+                     '<code>pool_order</code>, so no table above includes them.</p>')
+        parts.append(_table(
+            ["arm", "block", "cells", "cpu/episode", "probes/episode", "success@B"],
+            [[html.escape(r["policy"]), f'<span class="pill">{r["block"]}</span>',
+              r["cells"], f'{r["cpu_s_mean"]:.3f}', f'{r["test_calls_mean"]:.2f}',
+              f'{r["success_at_b"]:.1%}']
+             for r in control["arms"]], numeric=(2, 3, 4, 5)))
+
     dec = summary.get("decomposition", [])
     if dec:
         parts.append("<h2>RQ2 — the stepwise decomposition</h2>")

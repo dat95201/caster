@@ -155,12 +155,27 @@ class CellSpec:
     prior: str = DEFAULT_PRIOR
     cold_start: str = "max"
     explore_p: float = 0.15
+    #: Containment at which a probe is deferred to the back of the round's
+    #: queue because something that already PASSED refutes the same patches.
+    #: 0.0 disables the rule, which is what arm `km-ov0` is. See
+    #: `caster.exec.ledger` for why 0.75 and not ⅔.
+    overlap_thr: float = 0.75
+    #: Refutations a probe needs on record before its rejection set may
+    #: suppress anything.
+    overlap_min_rej: int = 1
     #: "rank" (the default) | "name" | "hash". See `schedule_tie_rank`.
     tie_break: str = "rank"
 
     # steering knobs; all inert when the policy is unsteered
     steer_on: bool = False
-    k_facts: int = 2
+    #: 3, not 2. The contract block now DEDUPLICATES: two facts that refute the
+    #: same patches spend two slots to say one thing, so the near-copy is
+    #: dropped and the next distinct refuter takes the slot. Asking for 3 under
+    #: deduplication renders about what asking for 2 rendered before, and the
+    #: number that any k-sweep must be read against is `k_facts_rendered`, not
+    #: this one. Measured on the pilot: 55% of episodes end with fewer than 2
+    #: distinct proven refuters, so k is a ceiling far more often than a count.
+    k_facts: int = 3
     disclosure: str = "full"
     show_kill_rate: bool = True
     k_candidates: int = 1            # >1 ⇒ verbalized sampling
@@ -196,6 +211,12 @@ class CellSpec:
             raise ValueError("k_candidates must be >= 1")
         if not 0.0 <= self.explore_p <= 1.0:
             raise ValueError("explore_p must be in [0, 1]")
+        if not 0.0 <= self.overlap_thr <= 1.0:
+            raise ValueError("overlap_thr must be in [0, 1]")
+        if self.overlap_min_rej < 1:
+            raise ValueError("overlap_min_rej must be >= 1")
+        if self.k_facts < 0:
+            raise ValueError("k_facts must be >= 0")
 
     # -- the one source of truth for "what are this cell's fields" ------------
 
@@ -247,8 +268,20 @@ class CellSpec:
 #: still a claim at a round where no arm has anything to claim, so the
 #: default tie-break is now POOL RANK and every arm but `random` walks the
 #: natural order at round 1. Same cells, same nonces, different results — the
-#: bump is what keeps rows of different versions from pooling.
-KEY_VERSION = 3
+#: bump is what keeps rows of different versions from pooling. v4: `model` is
+#: now RESOLVED before the key is built (`cli._model`). The field always
+#: existed; the CLI left it empty and the client fell back to `$MODEL`, so
+#: every v3 key claims `model=` for a cell drawn by a named model, and two
+#: models shared one `episode_id`. The meaning of every existing key therefore
+#: changed, which is exactly what this constant is bumped for — and
+#: `shard.PROTOCOL_FIELDS` now carries `key_version`, so a v3 shard and a v4
+#: shard are a hard stop at merge rather than a silent pool.
+#: v5: `overlap_thr` and `overlap_min_rej` joined the spec (DECISIONS 33) and
+#: `k_facts` defaulted 2 → 3 (DECISIONS 34). All three change what a cell IS,
+#: so every cell is re-keyed at once rather than letting an unwritten field
+#: read as a default in an analysis. Every pilot row is v4 or older and does
+#: not pool with anything produced from here on.
+KEY_VERSION = 5
 
 
 #: How the schedule breaks a tie between probes of EQUAL score.
@@ -352,7 +385,8 @@ KEY_FLAGS: frozenset[str] = frozenset(
 NONKEY_FLAGS: frozenset[str] = frozenset({
     # production — how the cell is MADE
     "budget", "resume", "no_resume", "shards", "shard", "shard_index",
-    "from_cache_only", "replay_only", "dry_run", "jobs", "run_dir", "run_id",
+    "from_cache_only", "replay_only", "on_cache_miss",
+    "dry_run", "jobs", "run_dir", "run_id",
     "force_full_budget", "max_consecutive_backend_failures", "timeout",
     "backend", "gateway_url", "local_replicas", "max_replicas", "keep_serving",
     "context_tokens", "context", "port", "spend_cap", "queue_timeout",

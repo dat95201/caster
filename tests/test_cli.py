@@ -48,7 +48,7 @@ def test_no_grid_wide_flag_is_silently_outranked_by_an_arm():
     line says.
 
     The evidence budget, the disclosure policy and the VS width are set by every
-    Block B arm's own overrides, so they are arms (`km+steer-k3`,
+    Block B arm's own overrides, so they are arms (`km+steer-k2`,
     `km+steer-sample`, `km+steer+vs`) and deliberately not flags. The four that
     remain are grid-wide because they are swept ACROSS arms.
     """
@@ -533,3 +533,74 @@ def test_dotenv_is_actually_loaded_and_the_shell_still_wins(tmp_path):
                          text=True, timeout=60,
                          env={**env, "MODEL": "from-shell"})
     assert out.stdout.split()[0] == "from-shell", "the file is a default, not an authority"
+
+
+def test_phase_one_does_not_mark_phase_two_done(wired, run_dir, capsys):
+    """The pilot's soundness failure, end to end.
+
+    `caster propose` and `caster evaluate` both walk `no-mem`. If phase 1's
+    cells land in `shards/*/cells.done`, resume calls them done and phase 2
+    never evaluates the arm — so the merged `no-mem` rows are phase-1 rows:
+    full budget, cold verdict store, live sandbox, collected before `audit`
+    corrected anything. Against twelve arms replayed from the warm store that
+    is `no-mem=False@None` vs `True@1`, reported as a soundness bug.
+    """
+    from caster.run import shard
+
+    assert _run("freeze", "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    assert _run("propose", "--seeds", "0", "--policies", "no-mem",
+                "--budget", "2") == 0
+    capsys.readouterr()
+
+    assert shard.phase_inputs("propose"), "phase 1 wrote nothing"
+    assert not shard.inputs(), "phase 1 wrote into the merge namespace"
+
+    # Phase 2 must still have work to do for the very same arm.
+    assert _run("evaluate", "--seeds", "0", "--policies", "no-mem",
+                "--budget", "2") == 0
+    out = capsys.readouterr().out
+    assert "nothing to walk" not in out
+    assert shard.inputs(), "phase 2 wrote nothing"
+
+
+def test_merge_warns_when_one_namespace_holds_two_collection_modes(
+        wired, run_dir, capsys):
+    """A warning that names the cause, instead of a soundness violation.
+
+    Phase 1 live and phase 2 replayed are different oracle states. When both
+    end up in `shards/` anyway — a hand-run driver, an old fleet script — the
+    merge has to say so rather than leave the operator reading `no-mem=False`
+    against eleven `True`s.
+    """
+    from caster.run import shard
+
+    assert _run("freeze", "--min-pool", "6", "--date-min", "2000-01-01") == 0
+    capsys.readouterr()
+    assert _run("evaluate", "--seeds", "0", "--policies", "no-mem",
+                "--budget", "2", "--force-full-budget") == 0
+    capsys.readouterr()
+    assert _run("evaluate", "--seeds", "0", "--policies", "natural",
+                "--budget", "2") == 0
+    capsys.readouterr()
+
+    audits = shard.audit_protocol(shard.metas(),
+                                  records=shard.meta_records())
+    mode = next(a for a in audits if a.name == "collection mode")
+    assert not mode.ok and not mode.fatal
+    assert any("force_full_budget" in item for item in mode.items)
+
+
+def test_merge_and_analyse_are_told_which_faults_are_the_control_arm(monkeypatch):
+    """The wiring, not the arithmetic — that is in test_review_regressions.
+
+    `_control_tasks` reads the flag off the frozen document rather than going
+    through `gate.control_tasks`, so a corpus frozen before `--control-size`
+    existed (no `control` key on any task) is an empty tuple at merge time
+    instead of a KeyError.
+    """
+    doc = {"tasks": {"t/1": {"control": False}, "ctl/9": {"control": True},
+                     "t/2": {}}}
+    assert cli._control_tasks(doc) == ("ctl/9",)
+    assert cli._control_tasks({}) == ()
+    assert cli._control_tasks({"tasks": {"t/1": None}}) == ()

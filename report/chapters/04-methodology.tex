@@ -151,7 +151,7 @@ Extra program executions & \textbf{none} & The scheduler reorders the runs the
 loop was already making; it never adds one\\
 Extra model calls & \textbf{none} & Hint selection reads the store. The prompt
 module cannot execute anything --- it does not import the validator\\
-Prompt growth over a session & \textbf{none} & Exactly $k$ hints every round,
+Prompt growth over a session & \textbf{none} & At most $k$ hints in any round,
 not $O(B)$ transcript lines\\
 Training & \textbf{none} & There is no model to train and no corpus to collect.
 The statistics are of this task, in this session\\
@@ -298,6 +298,66 @@ $k{=}1$. And because $\varepsilon$ changes measured numbers, it belongs in the
 configuration key, which means it has to be declared. A configuration with
 $\varepsilon = 0$ is run as a sensitivity check.
 
+\subsection{Correcting a Marginal Rate}
+\label{sec:overlap}
+
+Equation~\eqref{eq:score} ranks each test on its own record. That is a
+\emph{marginal} rate, and under stop-at-first-rejection the quantity that
+decides cost is a \emph{conditional} one.
+
+Consider two tests that reject exactly the same candidates. Each has the same
+record, so each gets the same $K$, and both sit near the top of the order.
+Suppose the first of them runs and the candidate \emph{passes} it. The second
+test is now nearly worthless: everything it is known to reject has already been
+shown not to apply here. The marginal $K$ cannot see this, because it never
+looks at \emph{which} candidates a test rejected, only how many.
+
+This is the same distinction that separates the \emph{total} and
+\emph{additional} families in test prioritisation \citep{rothermel2001}. The
+additional family picks the test that adds the most to what previous tests
+already covered, rather than the test with the best standalone score, and it is
+the reason the additional variants outperform the total ones in that
+literature. The rule here is the same idea with a different notion of coverage:
+not lines of code, but the set of candidates a test is known to reject.
+
+Write $R(x)$ for the set of candidates test $x$ has been observed to reject so
+far in the session, and let $P$ be the tests that have already run \emph{and
+passed} on the current candidate. Define
+\begin{equation}
+\mathrm{overlap}(x \mid a) \;=\; \frac{\lvert R(x) \cap R(a)\rvert}{\lvert R(x)\rvert},
+\label{eq:overlap}
+\end{equation}
+and defer $x$ --- move it to the back of this round's order --- when
+$\mathrm{overlap}(x \mid a) \ge \tau$ for some $a \in P$. The default is
+$\tau = 0.75$.
+
+Three properties of this rule matter more than the rule itself.
+
+\paragraph{It defers, it never drops.} A deferred test still runs; it runs
+last. An accepting round therefore still executes every test, so
+Definition~\ref{def:soundness} is untouched and scheduling remains a pure cost
+claim. A rule that skipped tests would be a different and unsound method.
+
+\paragraph{A test is deferred at most once per round.} Without that bound a
+test can be stepped over repeatedly as $P$ grows, which pushes a genuine
+rejecter arbitrarily far back. The bound is also the better rule when measured:
+on the pilot data, a deferral lasting the whole round is worth $-4.4\,\%$ CPU
+with a 95\,\% interval of $[-9.1, +0.2]$, against $-6.3\,\%$ with
+$[-13.5, -0.6]$ for one deferral per test. Bounding the correction makes it
+both safer and stronger.
+
+\paragraph{The rule is cheap; the evidence is not.} Equation~\eqref{eq:overlap}
+needs two tests to have been seen rejecting the same candidate. Under
+stop-at-first-rejection a round records exactly \emph{one} rejecting test, so
+that only happens when a candidate recurs in a later round and a different test
+reaches it first --- which occurred in $33\,\%$ of pilot sessions, usually for
+a single candidate. Measured on session-local evidence alone the correction is
+worth $-0.12\,\%$ CPU, interval $[-1.6, +1.3]$, which is not distinguishable
+from zero. Seeded instead from the rejection sets the audit pass has already
+computed for the same task, the same rule is worth $-6.3\,\%$, interval
+$[-13.5, -0.6]$. The configuration with $\tau = 0$ is run as a separate arm so
+that this clause is priced on its own rather than assumed.
+
 \paragraph{The order costs nothing to abandon.} It is built one position at a
 time from the store as it stood when the round began, and construction stops at
 the first rejection, so the unprobed tail is never materialised. Scheduling
@@ -370,7 +430,37 @@ At every round, the selector ranks proven tests by
 \mathrm{hintscore}(x) \;=\; K(x) \times \mathrm{legibility}(x)
 \label{eq:hintscore}
 \end{equation}
-and takes the top $k$, with $k = 2$ by default.
+and takes the top $k$, with $k = 3$ by default --- but it does not take them
+blindly, and the two qualifications are the point of this subsection.
+
+\paragraph{Near-duplicate hints are dropped.} Two hints that reject the same
+candidates spend two slots in the prompt to say one thing. The model gets no
+second failure mode and no second constraint, only the first one restated in
+different bytes, and it pays tokens and attention for the restatement. The
+selector therefore walks the ranking greedily and skips a candidate hint whose
+rejection set is already covered by one it has chosen, using the same
+containment of Equation~\eqref{eq:overlap} and the same threshold $\tau$:
+\begin{equation}
+\max\bigl(\mathrm{overlap}(x \mid m),\; \mathrm{overlap}(m \mid x)\bigr) \;\ge\; \tau
+\quad\text{for some already-chosen } m \;\Longrightarrow\; \text{skip } x .
+\label{eq:hintdedup}
+\end{equation}
+The comparison is symmetric here, unlike in the scheduler. There, one test has
+already run and the question is whether the next one still has anything to add
+after it; here neither hint has run and the question is whether the \emph{pair}
+is worth two slots, so a narrow hint sitting inside a broad one is dropped
+whichever way round the two are ranked.
+
+\paragraph{$k$ is a ceiling, not a count.} Raising the default from $2$ to $3$
+is what the deduplication is for: asking for three distinct hints renders about
+what asking for two undeduplicated hints rendered before, with the third slot
+going to a genuinely different failure mode when one exists. Often one does
+not. In the pilot, $55\,\%$ of sessions ended with fewer than two distinct
+proven rejecters at all, so the selector returns fewer than $k$ far more often
+than it returns $k$. Every record therefore carries the number of hints that
+actually reached the prompt alongside the number requested, and the hint-count
+sweep of Chapter~\ref{ch:experiments} is read against the former. A sweep read
+against the requested $k$ would report a comparison it did not run.
 
 The cost term $\hat{m}(x)$ is deliberately \emph{absent} from
 Equation~\eqref{eq:hintscore}. The scheduler and the selector spend different
@@ -381,12 +471,18 @@ facts for no benefit.
 
 The legibility term is what replaces it. An input of a few bytes can be shown
 whole; an input of several megabytes cannot, and pasting a truncated prefix of
-it produces a requirement the model cannot satisfy. Inputs above a length
-threshold are rendered as a \emph{shape} --- the first line verbatim, then a
-description of the structure and size --- and are ranked below inputs that can
-be shown in full. The identifier of a test case is never shown, because a file
-name carries no information the model can act on and invites it to reason about
-the benchmark rather than the program.
+it produces a requirement the model cannot satisfy --- it would be told to
+produce a specific output on an input it has not seen. Inputs above a length
+threshold of $400$ characters are therefore rendered as a \emph{shape}, the
+first line verbatim followed by the structure and size, and their score is
+multiplied by a penalty of $0.45$.
+
+That the penalty is a factor rather than a veto is deliberate: a test that
+rejects nearly everything is still the most useful fact available, so a
+dominant illegible test can outrank a legible one when nothing else is close.
+The identifier of a test case is never shown at all, because a file name
+carries no information the model can act on and invites it to reason about the
+benchmark rather than the program.
 
 \subsection{The Disclosure Dial}
 
@@ -409,11 +505,13 @@ Chapter~\ref{ch:results}:
 \toprule
 Level & What the prompt shows\\
 \midrule
-\code{sample-only} & The input only; the expected output is withheld.\\
-\code{no-required-line} & Input and expected output, but phrased as an
-observation rather than as a required output line.\\
-\code{full} (default) & Input, expected output, and an explicit statement that
-the patch must produce it.\\
+\code{sample-only} & \textbf{Nothing from the store.} The contract block is
+withheld in full, so the only worked examples in the prompt are the task's own
+public samples. This is the floor of the ladder, not a partial disclosure.\\
+\code{no-required-line} & The selected \emph{inputs}, and a line saying the
+patch is checked on them --- but their expected outputs are withheld.\\
+\code{full} (default) & The selected inputs, their expected outputs, and an
+explicit statement that the patch must produce them.\\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -426,9 +524,13 @@ findings.
 
 Three differences from transcript memory follow from the construction.
 
-\emph{The prompt does not grow.} Exactly $k$ hints appear at every round,
-regardless of how long the session has run. A transcript grows linearly in the
-number of rounds and therefore walks past the point where more context starts to
+\emph{The prompt does not grow.} At most $k$ hints appear in any round, and
+the bound does not depend on how long the session has run. It is \emph{at
+most} rather than exactly: a round reaches the prompt with fewer when the store
+holds fewer than $k$ proven tests, and with none at all in round~$1$, when the
+store is empty --- which is also what makes round~$1$ byte-identical across
+every configuration. A transcript, by contrast, grows linearly in the number of
+rounds and therefore walks past the point where more context starts to
 hurt~\citep{parasaram2025factselection}.
 
 \emph{The content changes.} Which tests have the highest rejection rate changes

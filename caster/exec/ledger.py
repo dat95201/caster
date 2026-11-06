@@ -16,7 +16,44 @@ asserts the import graph.
         m̂[i] = M(i) if n[i] > 0 else m̄
         return C sorted by (−K(i)/max(m̂[i], 1e-6), tie(i))
 
-    UPDATE(i, refuted, cpu):  n[i]+=1; k[i]+=refuted; s[i]+=cpu        # O(1)
+    UPDATE(i, refuted, cpu, patch):
+        n[i]+=1; k[i]+=refuted; s[i]+=cpu                              # O(1)
+        if refuted: R[i].add(patch)      # the rejection set, for OVERLAP
+
+    OVERLAP(i, j) = |R[i] ∩ R[j]| / |R[i]|        0 when |R[i]| < min_rej
+
+    REDUNDANT(i, passed) = ∃ a ∈ passed : OVERLAP(i, a) ≥ overlap_thr
+
+A fifth property, added after the pilot:
+
+**`K` is a marginal rate, and under fail-fast the quantity that decides cost is
+a conditional one.** Two probes that refute the same patches are
+interchangeable; once one of them has PASSED on a candidate the other is very
+unlikely to refute it, yet the marginal `K` still ranks it high. `REDUNDANT`
+is the correction: a probe whose rejection set is mostly inside one that has
+already passed *this round* is moved to the back of **that round's** queue.
+It is a deferral, never a drop — an accepting round still runs the whole pool,
+so ordering cannot change acceptance (Invariant 2) — and it dies with the
+round, because `passed` is round-scoped while `R` is episode-scoped.
+
+A probe may be pushed back **at most once per round**. The walk is finite
+either way — the queue shrinks every step — but one deferral each makes the
+bound a rule rather than an argument about a loop, and it measures better:
+replayed over the pilot, a deferral that lasts the whole round is worth −4.4%
+CPU, CI95 [−9.1, +0.2], against −6.3% [−13.5, −0.6] for one deferral each.
+Letting a probe be stepped over repeatedly pushes a genuine refuter too far
+back, and the cost of that outweighs what the extra suppression saves.
+
+Replayed over the pilot's full kill matrix the correction is worth
+**−6.3% CPU, CI95 [−13.5, −0.6]**, when `R` is seeded from a table the audit
+has already produced (`seed_overlap`) — and **−0.12%, CI95 [−1.6, +1.3]**, on
+episode-local evidence alone, which is not distinguishable from zero. The rule
+is cheap; the evidence is not, and that gap is the whole engineering question.
+Under fail-fast a round records exactly ONE refuting probe, so two probes are
+seen refuting the same patch only when that patch recurs in a later round and a
+different probe reaches it first — 33% of pilot episodes, usually one patch.
+Shipping the rule on episode-local evidence is therefore a bet on the seeded
+table, not a measured win on its own.
 
 Four properties the implementation must preserve, each with what it cost:
 
@@ -82,6 +119,21 @@ ILLEGIBLE_PENALTY = 0.45
 #: proven killers exist. See `explore_p` in the module docstring.
 DEFAULT_EXPLORE_P = 0.15
 
+#: Containment at which one probe is treated as a copy of another: defer it
+#: when this much of its rejection set is already inside a probe that passed.
+#: 0.75 rather than ⅔ on purpose. Swept over the pilot the rule is flat across
+#: [0.667, 0.95] and falls off a cliff at 0.50, so the middle of the plateau is
+#: the safe place to sit; and small counts make EXACTLY ⅔ a value the data
+#: actually takes (2 shared out of 3), where float comparison decides the
+#: branch. One pilot task moved 180 s → 740 s on that tie alone.
+DEFAULT_OVERLAP_THR = 0.75
+
+#: How many refutations a probe must have on record before its rejection set is
+#: allowed to suppress anything. 1 is weak evidence and is the default anyway,
+#: because under fail-fast raising it to 2 makes the rule fire zero times on
+#: episode-local data. Raise it when `R` is seeded from an audit table.
+DEFAULT_OVERLAP_MIN_REJ = 1
+
 
 @dataclasses.dataclass
 class CaseStat:
@@ -91,6 +143,12 @@ class CaseStat:
     n: int = 0          # candidates this case has been executed against
     k: int = 0          # ... of which it refuted
     s: float = 0.0      # total CPU seconds spent running it
+    #: WHICH candidates it refuted, by patch sha. `k` is `len(rejected)` only
+    #: when every refutation was a distinct patch, which is not guaranteed —
+    #: a proposer that re-emits a patch pays `n` and `k` again while the set is
+    #: unchanged. The COUNT is the kill record FRTP ranks on; the SET is what
+    #: `overlap` needs, and the two must not be collapsed into one another.
+    rejected: set[str] = dataclasses.field(default_factory=set)
     #: When this case first refuted anything. RECORDED, not ranked on: no
     #: policy reads it. `fault-record` ranks on the kill COUNT `k`, as FRTP
     #: does (Qi et al., ICSM 2013). Kept because `snapshot()` carries it and a
@@ -161,6 +219,8 @@ class CaseLedger:
         prior: str = DEFAULT_PRIOR,
         cold_start: str = "max",
         explore_p: float = DEFAULT_EXPLORE_P,
+        overlap_thr: float = DEFAULT_OVERLAP_THR,
+        overlap_min_rej: int = DEFAULT_OVERLAP_MIN_REJ,
         tie_key: Callable[[str], str] | None = None,
         rng: random.Random | None = None,
         input_chars: dict[str, int] | None = None,
@@ -173,6 +233,12 @@ class CaseLedger:
         self.prior_name = prior
         self.cold_start = cold_start
         self.explore_p = float(explore_p)
+        if not 0.0 <= overlap_thr <= 1.0:
+            raise ValueError("overlap_thr must be in [0, 1]")
+        if overlap_min_rej < 1:
+            raise ValueError("overlap_min_rej must be >= 1")
+        self.overlap_thr = float(overlap_thr)
+        self.overlap_min_rej = int(overlap_min_rej)
         names = list(case_names)
         # Pool rank, not the case name. They agree on ConDefects (pool order IS
         # `sorted(filenames)`) and come apart on any adapter whose listing is
@@ -243,8 +309,15 @@ class CaseLedger:
         """K(i)/m̂(i) — the quantity the proposal arm ranks on."""
         return self.K(name) / max(self.m_hat(name, m_bar), MIN_COST)
 
-    def update(self, name: str, *, refuted: bool, cpu_s: float, round_index: int = -1) -> None:
-        """UPDATE(i, refuted, cpu). O(1), and the only mutator of (n, k, s)."""
+    def update(self, name: str, *, refuted: bool, cpu_s: float,
+               round_index: int = -1, patch: str | None = None) -> None:
+        """UPDATE(i, refuted, cpu, patch). O(1), the only mutator of (n, k, s, R).
+
+        `patch` is the candidate's sha. It is optional so that every existing
+        caller and every test keeps working, but a caller that omits it leaves
+        `rejected` empty, and `overlap` then reports 0 for that probe forever —
+        the rule degrades to plain `K/m̂` rather than to something wrong.
+        """
         st = self.stats.get(name)
         if st is None:
             return
@@ -255,6 +328,61 @@ class CaseLedger:
                 st.first_kill_round = round_index
             st.k += 1
             st.last_kill_round = round_index
+            if patch:
+                st.rejected.add(patch)
+
+    # ---- overlap: the conditional correction to a marginal K --------------
+
+    def overlap(self, name: str, other: str) -> float:
+        """How much of `name`'s rejection set is already inside `other`'s.
+
+        Containment, not Jaccard, and deliberately asymmetric: the question the
+        scan asks is "does `name` still have anything to say now that `other`
+        has run", which is `|R(name) ∩ R(other)| / |R(name)|`. Jaccard would
+        answer a different question — whether the two probes are interchangeable
+        in general — and would let a broad probe hide behind a narrow one.
+
+        0.0 when `name` has fewer than `overlap_min_rej` refutations on record,
+        which is the no-evidence case, not a low-similarity one.
+        """
+        a = self.stats.get(name)
+        b = self.stats.get(other)
+        if a is None or b is None or not b.rejected:
+            return 0.0
+        if len(a.rejected) < self.overlap_min_rej:
+            return 0.0
+        return len(a.rejected & b.rejected) / len(a.rejected)
+
+    def redundant(self, name: str, passed: Sequence[str]) -> bool:
+        """Is `name` a copy of something that already PASSED this round?
+
+        `passed`, not "already run": a probe that refuted ended the round, and
+        a probe that was skipped as unusable proves nothing. The whole argument
+        is conditional on a pass — if a near-copy of `name` has just failed to
+        refute this candidate, `name` is unlikely to refute it either.
+        """
+        if self.overlap_thr <= 0.0 or not passed:
+            return False
+        return any(self.overlap(name, a) >= self.overlap_thr for a in passed)
+
+    def seed_overlap(self, rejected: dict[str, Iterable[str]]) -> None:
+        """Install rejection sets measured elsewhere — the audit's kill matrix.
+
+        Separate from `seed_from` and with the same warning: statistics learned
+        on other episodes of this task break the independence CRN pairs on, so
+        an arm that calls this is reported BESIDE the main grid, never inside
+        it. It exists because the measured headroom (−6.6% against −0.9% for
+        episode-local evidence) is most of the reason to have the rule at all,
+        and because `caster audit` already produces exactly this table.
+
+        Only `rejected` is seeded. `n`, `k` and `s` are left alone: seeding
+        those would also move `K` and `m̂`, and then the arm would be measuring
+        two changes at once.
+        """
+        for name, patches in rejected.items():
+            st = self.stats.get(name)
+            if st is not None:
+                st.rejected |= set(patches)
 
     # ---- the schedule -----------------------------------------------------
 
@@ -308,6 +436,11 @@ class CaseLedger:
         Proven cases only (prompt rule 5). A dominant illegible killer still wins
         when nothing else is close, and `steer.render` then shows it as a shape
         rather than as truncated bytes (prompt rule 6).
+
+        Returns AT MOST k, and often fewer: near-duplicate facts are dropped
+        (see below) and the pool of proven cases is small. `k_facts_rendered`
+        on the record is what actually reached the prompt, and it is the field
+        any k-sweep must be read against — not the requested `k`.
         """
         if k <= 0:
             return []
@@ -316,7 +449,23 @@ class CaseLedger:
             proven,
             key=lambda n: (-(self.K(n) * self.legibility(n)), self._tie(n)),
         )
-        return [(n, self.K(n)) for n in ranked[:k]]
+        # Two facts that refute the same patches are ONE fact spending two
+        # slots. The prompt pays tokens and attention for each, and a second
+        # near-copy buys neither a new failure mode nor a new constraint — it
+        # just re-states the first in different bytes. Same containment rule as
+        # the schedule, symmetric here because neither fact is "already run":
+        # the question is whether the PAIR is worth two slots, not whether one
+        # follows the other, so a narrow fact inside a broad one is dropped
+        # whichever way round it is ranked.
+        chosen: list[tuple[str, float]] = []
+        for n in ranked:
+            if len(chosen) >= k:
+                break
+            if any(max(self.overlap(n, m), self.overlap(m, n)) >= self.overlap_thr
+                   for m, _ in chosen):
+                continue
+            chosen.append((n, self.K(n)))
+        return chosen
 
     # ---- cross-episode priors: a separate experiment, never the main grid --
 
@@ -338,6 +487,10 @@ class CaseLedger:
         return {
             n: {"n": s.n, "k": s.k, "s": round(s.s, 6),
                 "first_kill_round": s.first_kill_round,
-                "last_kill_round": s.last_kill_round, "unusable": s.unusable}
+                "last_kill_round": s.last_kill_round, "unusable": s.unusable,
+                # Sorted, so a snapshot is byte-stable; the whole set rather
+                # than its size, because `seed_overlap` reads it back and a
+                # count cannot be intersected with anything.
+                "rejected": sorted(s.rejected)}
             for n, s in self.stats.items()
         }

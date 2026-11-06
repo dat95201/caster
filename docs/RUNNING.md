@@ -65,12 +65,40 @@ construction:
 And one that can corrupt a run silently:
 
 ```bash
-LLM_CONTEXT_TOKENS=32768     # 0 disables the check; don't
+LLM_CONTEXT_TOKENS=65536     # 0 disables the check; don't
 ```
 
 A server is free to **truncate** an over-long prompt rather than refuse it, and
 the served window reaches neither the cache key nor the record. It lands
 differentially — the steered arms carry the longest prompts.
+
+**Size it against the corpus, not against a habit.** Slot S3 carries the whole
+current source and the reply carries a whole rewrite of it, so the window has
+to hold *both*. With G6 (`--lines-max`) off there is no source-length screen,
+so the corpus decides. Measured over ConDefects' 2,864 Python faults:
+
+| served window | admitted tasks that fit |
+|---|---|
+| 8,192 | 98.11% |
+| 16,384 | 99.34% |
+| 32,768 | 99.86% |
+| **65,536** | **99.97%** |
+
+The remainder is one 192 KB submission (`abc308_g/43737866`) that needs a
+127k window and fits in none that a local 7B will serve. Either screen it out
+(`freeze --lines-max 2000`) or accept it as `context_overflow` — it is
+reported in the proposal-error table before any scheduler number.
+
+`LLM_CONTEXT_TOKENS` and the server's own `num_ctx` move **together**: this
+variable is the declared window and `caster serve verify` refuses when the
+backend serves a different one. `caster preflight` now names the admitted
+tasks that do not fit, with the window each would need, before a grid starts —
+a task that does not fit burns every round of every seed as `context_overflow`
+and leaves a cache miss behind it for phase 2.
+
+The matching output ceiling is `steer.template.MAX_BUDGET` (32,000; it was
+16,000 while G6 was on), and `serve gateway --tok-budget` must track it or the
+service timeout aborts the longest legitimate generation.
 
 ## 4. Check before you spend
 
@@ -159,6 +187,17 @@ This is where the money goes. `--dry-run` first:
 caster propose --policies no-mem --budget 20 --dry-run
 ```
 
+**Phase 1 writes under `data/<run>/propose/`, not `data/<run>/shards/`.** Its
+rows are a by-product of filling the two stores, not an arm's result: it draws
+the full budget, it runs against a cold verdict store and a live sandbox, and
+it runs *before* `caster audit` has measured anything. `no-mem` is both the
+phase-1 arm and a Block A arm, so a shared `shards/*/cells.done` made phase 2
+skip it as "already done" and merge its phase-1 rows instead — which is how
+`no-mem` ended up the only Block A arm at `accept=False` and failed Invariant
+2. `caster merge` globs `shards/*/rounds.jsonl` and cannot reach the phase-1
+namespace at all; `caster audit` reads both, because the patch sequence it
+scores is the one phase 1 drew.
+
 **Block B arms cannot use this path.** Their round-*t* prompt is a function of
 the ledger at round *t*, which phase 2 produces, so the two phases are not
 separable at all — they run their model calls inside `evaluate`.
@@ -193,7 +232,15 @@ caster evaluate --policies km --replay-only    # refuses to run the sandbox at a
 caster evaluate --policies km --from-cache-only  # refuses to call the model
 ```
 
-A cache miss under either is a loud failure, not a silent draw.
+A cache miss under either is a loud failure, not a silent draw — but it is
+**not** a fatal one for the fleet. The default is `--on-cache-miss skip`: the
+cell is abandoned whole (no rows, no done-index entry, so it re-walks the
+moment the gap is filled), the miss is appended to
+`shards/sNN/misses.jsonl`, the walk continues, and the shard exits **3** with
+the list. `--on-cache-miss stop` restores the old behaviour, which killed the
+shard process and took its whole remaining range with it: one cell whose
+phase-1 draw hit `context_overflow`, or whose probe is stored as a quarantined
+`timeout`, cost every later task in that range across every arm.
 
 ```bash
 caster evaluate --control      # the unfiltered control arm, reported separately
@@ -243,7 +290,7 @@ N× that number.
 ```bash
 caster serve start --model <id> --local-replicas auto --vram <free VRAM bytes>
 caster serve gateway --port 8000 --backend local --spend-cap 25 \
-                     --tok-per-sec 16 --tok-budget 16000
+                     --tok-per-sec 16 --tok-budget 32000
 caster serve verify         # the served context window, measured not assumed
 caster serve stop
 ```
@@ -319,6 +366,12 @@ python3 scripts/build_notebook.py
 | symptom | what it means |
 |---|---|
 | `FAIL: ... not servable from the verdict store` | `--from-cache-only` / `--replay-only` hit a miss. Run `caster audit` for that task first, or drop the flag. The loud failure is the point. |
+| `N cell(s) SKIPPED on a cache miss` (exit 3) | Phase 1 owes those cells. Read `shards/sNN/misses.jsonl`, fill the gap (`propose` for a model miss, `audit` for a scan miss), re-issue the identical command — it walks exactly those. |
+| `already holds rows collected under a different protocol` | A second launch into a shard index that holds rows from a different model, key version, sandbox timeout or served window. Use a fresh `--run-dir` (`scripts/migrate_run.py` carries the frozen corpus over), a different `--shard`, or move the directory aside. |
+| `N arm(s) were requested and produced no row at all` | An arm died before its first cell — usually a bad flag or an exhausted range. GAPS cannot see it: an arm with no rows has no cells to be missing from. |
+| `FOREIGN` fatal on tasks you recognise | They are probably the control arm's. `merge` reads the `control` flag off `pool/tasks.json`, so a corpus frozen without `--control-size` has no such flag and the faults really are foreign — re-freeze, or run the control arm under its own `--run-dir`. |
+| `--control-size N drew NOTHING` after `freeze` | The control arm samples faults a THRESHOLD gate cut, and G3/G5/G6 are all off by default. Re-freeze with the threshold whose effect you want measured, e.g. `--min-pool 20 --control-size 40`. |
+| `quarantined_timeout_verdicts: N` after `audit` | Those `(patch, probe)` pairs are written but never served, so a `--replay-only` phase 2 will skip any cell whose schedule reaches one. Raise `--timeout` and re-audit, or expect them in GAPS. |
 | `HeldOutProbeLeak` | A `P_eval` probe reached the loop. Only possible under `--holdout`; it halts the run rather than quietly contaminating a score. |
 | `VerdictDivergence` | A stored verdict and a fresh one disagree, stably, on one host. **Do not pick a winner** — fix the cause and re-run both. Timeouts are exempt; they are quarantined. |
 | merge audit `DISAGREEMENT` | The same (cell, round) collected twice with different results, usually a wall-clock timeout firing on the slower machine. Same rule: fix and re-run both. |

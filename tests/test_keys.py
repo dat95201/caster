@@ -55,7 +55,8 @@ def test_every_knob_changes_the_key():
     base = CellSpec(task="t", seed=1, policy="km")
     moved = {
         "prior": "jeffreys", "cold_start": "median", "explore_p": 0.0,
-        "tie_break": "name", "steer_on": True, "k_facts": 3,
+        "tie_break": "name", "steer_on": True, "k_facts": 2,
+        "overlap_thr": 0.0, "overlap_min_rej": 2,
         "disclosure": "sample-only", "show_kill_rate": False, "k_candidates": 5,
         "vs_schedule": True, "candidate_policy": "explore", "passing_block": True,
         "steer_mode": "exclusion", "transcript_cap_tokens": 4000,

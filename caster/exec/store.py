@@ -168,12 +168,18 @@ class PatchStore:
 
     def __init__(self, root: pathlib.Path | None = None) -> None:
         self.root = pathlib.Path(root or paths.PATCH_DIR)
+        #: Patch sources are content-addressed by sha, so an entry can never go
+        #: stale. Under CRN every Block A arm replays the SAME patch for a given
+        #: (task, seed, round), so without this the same small file is re-opened
+        #: once per arm — 12x on the Block A grid.
+        self._mem: dict[str, str] = {}
 
     def _path(self, sha: str) -> pathlib.Path:
         return self.root / sha[:2] / f"{sha}.py"
 
     def put(self, source: str) -> str:
         sha = sha256_text(source)
+        self._mem[sha] = source
         path = self._path(sha)
         if path.exists():
             return sha
@@ -182,10 +188,15 @@ class PatchStore:
         return sha
 
     def get(self, sha: str) -> str | None:
+        hit = self._mem.get(sha)
+        if hit is not None:
+            return hit
         path = self._path(sha)
         if not path.is_file():
             return None
-        return path.read_text(encoding="utf-8")
+        source = path.read_text(encoding="utf-8")
+        self._mem[sha] = source
+        return source
 
     def require(self, sha: str) -> str:
         source = self.get(sha)

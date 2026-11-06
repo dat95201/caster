@@ -25,7 +25,7 @@ import dataclasses
 import re
 
 from caster.llm.client import CallMeta, LLMClient, TruncatedResponse
-from caster.steer.template import budget_for_source
+from caster.steer.template import budget_for_source, output_ceiling
 
 # "### Candidate 2 (probability: 0.17)" — tolerant of the heading level, of
 # "prob"/"p"/"probability", of = or :, and of a trailing %.
@@ -132,8 +132,14 @@ def draw(
     ~7 KB this is the binding constraint on k, and the loop must be prepared for
     a reply that carries fewer than k blocks.
     """
-    per = budget_for_source(buggy_source, model=model or client.model)
-    max_tokens = min(per * max(1, k), 16_000)
+    chosen = model or client.model
+    per = budget_for_source(buggy_source, model=chosen)
+    # ONE ceiling, read from the sizer's own module. The bare `16_000` that
+    # used to sit here was a second copy of `MAX_BUDGET`: it clipped a
+    # reasoning model's k-candidate draw back to the chat ceiling, and it did
+    # not move when the chat ceiling did — so raising `MAX_BUDGET` for the
+    # long programs G6 now admits would have changed nothing on the k>1 arms.
+    max_tokens = min(per * max(1, k), output_ceiling(chosen))
     text = client.complete(
         prompt, nonce=nonce, max_tokens=max_tokens, model=model,
         temperature=temperature, reasoning_effort=reasoning_effort, meta=meta,

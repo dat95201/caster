@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import pathlib
 import platform
 import sys
@@ -43,6 +44,7 @@ from caster import paths
 from caster.exec.sandbox import DEFAULT_TIMEOUT, protocol_fields
 from caster.exec.store import PatchStore, VerdictStore
 from caster.keys import KEY_VERSION, CellSpec
+from caster.errors import CacheMiss
 from caster.llm.client import BackendUnreachable, LLMClient
 from caster.report.records import CellDone, CellWriter, load_done, needs_walk
 from caster.run import policies
@@ -63,6 +65,8 @@ class Grid:
     prior: str = "shipped"
     cold_start: str = "max"
     explore_p: float = 0.15
+    overlap_thr: float = 0.75
+    overlap_min_rej: int = 1
     tie_break: str = "hash"
     #: NOT a cell-key field (Invariant 13 names it as one of the values that
     #: "reach no key at all"), but it changes what a verdict IS — so it must
@@ -72,10 +76,11 @@ class Grid:
     sandbox_timeout: float = DEFAULT_TIMEOUT
 
     #: Grid-wide knobs that an arm's own overrides outrank. `km-explore0` IS its
-    #: `explore_p`, and `km+steer-k3` IS its `k_facts`; a grid-wide value must
+    #: `explore_p`, and `km+steer-k2` IS its `k_facts`; a grid-wide value must
     #: not silently retune them. Listed once here so adding a knob to `Grid` and
     #: forgetting to forward it is not possible.
-    FORWARDED = ("prior", "cold_start", "explore_p", "tie_break")
+    FORWARDED = ("prior", "cold_start", "explore_p", "overlap_thr",
+                 "overlap_min_rej", "tie_break")
 
     def protocol(self) -> dict[str, Any]:
         return protocol_fields(timeout=self.sandbox_timeout)
@@ -181,6 +186,21 @@ def plan(
     )
 
 
+#: How the rows were COLLECTED. Not a key and not a runtime field — it does
+#: not change what a cell IS, and two shards legitimately differ on it (phase
+#: 1 is live, phase 2 is a replay). It still has to be recorded, because a
+#: cell walked against a cold verdict store and a live sandbox is judged by a
+#: different oracle state than one replayed after `caster audit`, and when
+#: both land in `shards/` the only symptom is Invariant 2 failing on whichever
+#: arm was collected first. The audit over it is a WARNING that names the
+#: cause.
+COLLECTION_FIELDS = ("from_cache_only", "replay_only", "force_full_budget")
+
+
+def collection_record(cfg: Any) -> dict[str, Any]:
+    return {f: bool(getattr(cfg, f, False)) for f in COLLECTION_FIELDS}
+
+
 def protocol_record(grid: Grid, client: LLMClient, *, shard: str = "0",
                     extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """Invariant 13 — every value that changes a measured quantity is in a key
@@ -206,6 +226,11 @@ def protocol_record(grid: Grid, client: LLMClient, *, shard: str = "0",
             "reasoning_effort": grid.reasoning_effort or None,
             "budget": grid.budget,
             "policies": list(grid.policies),
+            # The seeds this launch ASKED for. The coverage audit used to read
+            # the arms and seeds off the rows it was auditing, so an arm or a
+            # seed that produced nothing was invisible to the one check whose
+            # job is to notice exactly that.
+            "seeds": list(grid.seeds),
             # The cell key's own version. It is written here as well as into
             # every key because the ROW does not carry it: `rounds.jsonl` holds
             # the CellSpec fields, which are identical across versions, so v1
@@ -229,10 +254,24 @@ def protocol_record(grid: Grid, client: LLMClient, *, shard: str = "0",
 
 
 def write_meta(doc: dict[str, Any], path: pathlib.Path) -> None:
+    """The current record, and the HISTORY beside it.
+
+    `meta.json` is the latest launch into this shard directory. It is also
+    **overwritten** by each one, and `rounds.jsonl` is not — so a second launch
+    erased the only record of the protocol the first launch's rows were
+    collected under, and the two audits that exist to catch instrument drift
+    had nothing left to compare. `meta.jsonl` is append-only and
+    `shard.meta_records` reads both.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(doc, indent=2, sort_keys=True), encoding="utf-8")
     tmp.replace(path)
+    history = path.with_suffix(".jsonl")
+    with history.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def walk(
@@ -246,12 +285,31 @@ def walk(
     cfg: EpisodeConfig | None = None,
     run_id: str = "local",
     progress: Any = None,
+    on_cache_miss: str = "skip",
+    misses: list[dict[str, Any]] | None = None,
 ) -> Iterator[EpisodeResult]:
     """Run each cell and commit it **atomically**. Yields as it goes.
 
     The commit order is rows → fsync → done-index. A crash between them
     re-walks the cell, which is free and correct; the other order would make
     resume skip a cell that was never written.
+
+    `on_cache_miss` decides what a replay-only run does when phase 1 never
+    produced something it needs. `"stop"` is the old behaviour and it is the
+    wrong default for a FLEET: a `CacheMiss` left `run_episode` uncaught, the
+    driver re-raised it, `cli.main` turned it into exit 1 — and the shard
+    process died with its whole remaining RANGE unwalked. One cell whose
+    phase-1 draw hit `context_overflow`, or whose probe is stored as a
+    quarantined `timeout` (`VerdictStore.get` never serves one), therefore cost
+    every later task in that range across EVERY arm. That is the pilot's "49
+    task(s) missing" in all twelve arms, and the loudness bought nothing: the
+    operator still had to read the merge audit to find out.
+
+    `"skip"` keeps the loudness and drops the collateral: the cell is
+    **abandoned whole** — no rows, no done-index entry, so it is re-walked the
+    moment the gap is filled — the miss is recorded, the walk continues, and
+    the caller exits non-zero with the list. The grid then shows exactly the
+    cells phase 1 owes, instead of a cliff at the first one.
     """
     store = VerdictStore(grid.protocol())
     patches = PatchStore()
@@ -267,7 +325,8 @@ def walk(
         yield from _walk_cells(grid, cells, adapter=adapter, client=client,
                                rows_path=rows_path, done_path=done_path,
                                store=store, patches=patches, base=base,
-                               run_id=run_id, progress=progress)
+                               run_id=run_id, progress=progress,
+                               on_cache_miss=on_cache_miss, misses=misses)
     finally:
         if unregister is not None:
             unregister()
@@ -286,6 +345,8 @@ def _walk_cells(
     base: EpisodeConfig,
     run_id: str,
     progress: Any,
+    on_cache_miss: str = "skip",
+    misses: list[dict[str, Any]] | None = None,
 ) -> Iterator[EpisodeResult]:
     for i, spec in enumerate(cells, 1):
         writer = CellWriter(rows_path, done_path)
@@ -296,6 +357,21 @@ def _walk_cells(
                 spec, adapter=adapter, client=client, store=store, patches=patches,
                 cfg=dataclasses.replace(base, budget=grid.budget), run_id=run_id,
             )
+        except CacheMiss as exc:
+            # The cell is abandoned WHOLE: no rows and no done-index entry, so
+            # it re-walks as soon as phase 1 (or `caster audit`) supplies what
+            # it needs. Nothing partial is written and nothing is marked done,
+            # which is what keeps "skip" from being a silent degradation.
+            writer.abandon()
+            if on_cache_miss == "stop":
+                raise
+            record = {"cell_key": spec.key(), "task": spec.task,
+                      "seed": spec.seed, "policy": spec.policy,
+                      "reason": str(exc)}
+            if misses is not None:
+                misses.append(record)
+            _log_miss(rows_path.parent / "misses.jsonl", record)
+            continue
         except BackendUnreachable:
             # the circuit breaker reached the driver. Stop cleanly: every
             # finished cell is already in the done-index and resumable, and this
@@ -315,3 +391,14 @@ def _walk_cells(
             accepted=result.accepted, truncated=result.truncated,
         ))
         yield result
+
+
+def _log_miss(path: pathlib.Path, record: dict[str, Any]) -> None:
+    """A skipped cell leaves a row of its own, beside the shard's output.
+
+    The console scrolls and a fleet log is read once; the file is what the
+    operator diffs against the next run to see whether phase 1 closed the gap.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, separators=(",", ":")) + "\n")

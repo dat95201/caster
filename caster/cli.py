@@ -58,6 +58,11 @@ def _add_cell_knobs(p: argparse.ArgumentParser) -> None:
     p.add_argument("--cold-start", dest="cold_start",
                    choices=("max", "median", "q75"), default="max")
     p.add_argument("--explore-p", dest="explore_p", type=float, default=0.15)
+    p.add_argument("--overlap-thr", dest="overlap_thr", type=float, default=0.75,
+                   help="defer a probe when this much of its rejection set is "
+                        "already inside one that passed this round; 0 disables")
+    p.add_argument("--overlap-min-rej", dest="overlap_min_rej", type=int, default=1,
+                   help="refutations a probe needs before it may suppress anything")
     # The default is read OFF `CellSpec`, not written here. A flag default and
     # a spec default are two places for one value, and they had already drifted:
     # the spec said "rank" while this said "hash", so every CLI run would have
@@ -71,7 +76,7 @@ def _add_cell_knobs(p: argparse.ArgumentParser) -> None:
     # would lose to the arm on exactly the arms where it matters — a flag that
     # is parsed, keyed and then discarded, which is the drift bug with the
     # arrow reversed. The evidence budget, the disclosure policy and the VS
-    # width ARE arms: `km+steer-k1`, `km+steer-k3`, `km+steer-sample`,
+    # width ARE arms: `km+steer-k1`, `km+steer-k2`, `km+steer-sample`,
     # `km+steer-noreq`, `km+steer+vs`. Add a row to the roster, not a flag.
     #
     # The four knobs above stay grid-wide because they are swept ACROSS arms:
@@ -87,6 +92,15 @@ def _add_run_knobs(p: argparse.ArgumentParser) -> None:
     p.add_argument("--from-cache-only", dest="from_cache_only", action="store_true",
                    help="refuse to CALL THE MODEL: a cache miss is a loud "
                         "failure, not a silent draw")
+    p.add_argument("--on-cache-miss", dest="on_cache_miss",
+                   choices=("skip", "stop"), default="skip",
+                   help="what a replay-only run does when phase 1 never "
+                        "produced something it needs. 'skip' abandons THAT "
+                        "CELL whole (no rows, no done-index entry, so it "
+                        "re-walks later), records it in misses.jsonl and "
+                        "exits non-zero at the end; 'stop' is the old "
+                        "behaviour and kills the shard, taking its whole "
+                        "remaining range with it")
     p.add_argument("--replay-only", dest="replay_only", action="store_true",
                    help="refuse to RUN THE SANDBOX too: every probe must be "
                         "servable from the verdict store. Checks the "
@@ -319,11 +333,38 @@ def _frozen(required: bool = True) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _model(args: argparse.Namespace) -> str:
+    """The proposer model id, resolved ONCE, for the key and the client alike.
+
+    `--model` defaults to the empty string and `LLMClient` falls back to
+    `$MODEL`, so the client ran under `qwen2.5-coder:7b` while every CellSpec
+    recorded `model=""`. `model` IS a `CellSpec` field — it is in the cell key
+    — so the whole grid was keyed under a model that is not the one that drew
+    the patches. Three things follow, and the pilot hit all three:
+
+      * two models collide. `(task, seed, policy)` under 7B and under 3B
+        produce the IDENTICAL `episode_id`, so `needs_walk` calls the second
+        one already done and never walks it, and `collapse` — last write wins
+        — drops whichever row file is read first. That is the "a later run
+        overwrote the earlier one" data loss, and it is silent;
+      * `proposal_error_table` and `repair_rates` are per `(policy, model)`
+        and every row reports `model=""`;
+      * the merge's protocol audit compares `meta.json`, which records
+        `grid.model or client.model` and therefore looked right while the keys
+        under it did not.
+
+    Resolving here means the key, the record and the call can no longer
+    disagree. `KEY_VERSION` is bumped with it: the meaning of every existing
+    key changed, so old and new rows must not pool.
+    """
+    return (getattr(args, "model", "") or os.environ.get("MODEL", "")).strip()
+
+
 def _client(args: argparse.Namespace) -> Any:
     from caster.llm.client import LLMClient
 
     return LLMClient(
-        model=getattr(args, "model", "") or None,
+        model=_model(args) or None,
         base_url=getattr(args, "gateway_url", None),
         temperature=getattr(args, "temperature", None),
         reasoning_effort=getattr(args, "reasoning_effort", None) or None,
@@ -350,9 +391,10 @@ def _grid(args: argparse.Namespace, frozen: dict[str, Any]) -> Any:
 
     return Grid(
         tasks=tasks, seeds=_ints(args.seeds), policies=_csv(args.policies),
-        budget=args.budget, model=args.model, temperature=args.temperature,
+        budget=args.budget, model=_model(args), temperature=args.temperature,
         reasoning_effort=args.reasoning_effort, prior=args.prior,
         cold_start=args.cold_start, explore_p=args.explore_p,
+        overlap_thr=args.overlap_thr, overlap_min_rej=args.overlap_min_rej,
         tie_break=args.tie_break,
         sandbox_timeout=(args.timeout if args.timeout else DEFAULT_TIMEOUT),
     )
@@ -542,6 +584,20 @@ def cmd_freeze(args: argparse.Namespace) -> int:
             f"shard that covers them."
         )
     doc = assemble(adapter, names, [seen[n] for n in names], cfg)
+    if args.control_size > 0 and not any(
+            (t or {}).get("control") for t in doc["tasks"].values()):
+        # The control arm is drawn from faults a THRESHOLD gate cut (G3, G5,
+        # G6). Every one of those is off by default now (decision 22), so
+        # `--control-size 40` against default thresholds has nothing to sample
+        # and draws zero — silently, until `caster evaluate --control` dies two
+        # stages later with "the frozen corpus has no control arm".
+        print(f"note: --control-size {args.control_size} drew NOTHING. The "
+              f"control arm samples faults rejected by a threshold gate (G3 "
+              f"--min-pool, G5 --date-min, G6 --lines-max) and all three are "
+              f"off here, so no fault was cut by one. Re-freeze with the "
+              f"threshold whose effect you want measured, e.g. `--min-pool 20 "
+              f"--control-size {args.control_size}`, or drop the flag.",
+              file=sys.stderr)
     write(doc, out)
     print(json.dumps({
         "pool_sha256": doc["pool_sha256"],
@@ -588,12 +644,16 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
 def _walk(args: argparse.Namespace, grid: Any, frozen: dict[str, Any],
           *, label: str) -> int:
     from caster.run import shard
-    from caster.run.driver import plan, protocol_record, walk, write_meta
+    from caster.run.driver import (collection_record, plan, protocol_record,
+                                   walk, write_meta)
     from caster.run.episode import EpisodeConfig
 
     paths.announce(label)
-    out_dir = shard.shard_dir(args.shard)
-    done_paths = shard.done_inputs() or [paths.CELLS_DONE]
+    # Each phase owns its namespace. `evaluate` must not resume from
+    # `propose`'s done-index: the two walk the same cell keys (the phase is in
+    # no key) but produce different rows, and the skip was silent.
+    out_dir = shard.shard_dir(args.shard, phase=label)
+    done_paths = shard.done_inputs(phase=label) or [paths.CELLS_DONE]
     p = plan(grid, first=args.first, last=args.last,
              done_paths=[*done_paths, out_dir / "cells.done"],
              resume=not args.no_resume)
@@ -606,17 +666,30 @@ def _walk(args: argparse.Namespace, grid: Any, frozen: dict[str, Any],
 
     adapter = _adapter(args, frozen)
     client = _client(args)
-    write_meta(protocol_record(grid, client, shard=str(args.shard),
-                               extra={"pool_sha256": frozen["pool_sha256"]}),
-               out_dir / "meta.json")
-
     cfg = EpisodeConfig(
         budget=grid.budget, from_cache_only=args.from_cache_only,
         replay_only=args.replay_only,
         force_full_budget=args.force_full_budget, concurrency=args.concurrency,
     )
+    meta = protocol_record(grid, client, shard=str(args.shard),
+                           extra={"pool_sha256": frozen["pool_sha256"],
+                                  "phase": label,
+                                  "collection": {
+                                      **collection_record(cfg),
+                                      "control": bool(getattr(args, "control", False)),
+                                  }})
+    # Reusing a shard index under a different model, key version, sandbox
+    # timeout or served window appends two instruments to one `rounds.jsonl`
+    # — and rewriting `meta.json` erases the evidence that they differ, so the
+    # merge audit passes. Refuse before the first row rather than after.
+    clash = shard.meta_conflict(meta, out_dir)
+    if clash:
+        raise SystemExit(f"{label}: {clash}")
+    write_meta(meta, out_dir / "meta.json")
+
     accepted = 0
     t0 = time.time()
+    misses: list[dict[str, Any]] = []
 
     def progress(i: int, n: int, spec: Any) -> None:
         print(f"  [{i}/{n}] {spec.policy:16s} {spec.task} seed {spec.seed}",
@@ -625,11 +698,27 @@ def _walk(args: argparse.Namespace, grid: Any, frozen: dict[str, Any],
     for result in walk(grid, p.cells, adapter=adapter, client=client,
                        rows_path=out_dir / "rounds.jsonl",
                        done_path=out_dir / "cells.done",
-                       cfg=cfg, run_id=args.run_id, progress=progress):
+                       cfg=cfg, run_id=args.run_id, progress=progress,
+                       on_cache_miss=getattr(args, "on_cache_miss", "skip"),
+                       misses=misses):
         accepted += int(result.accepted)
     print(json.dumps({"cells": len(p.cells), "accepted": accepted,
+                      "skipped_cache_miss": len(misses),
                       "seconds": round(time.time() - t0, 1),
                       "rows": str(out_dir / "rounds.jsonl")}, indent=2))
+    if misses:
+        # Still a build failure — just not one that takes the rest of the
+        # range with it. The cells are unwritten and unindexed, so re-issuing
+        # the identical command after phase 1 (or `caster audit`) fills the
+        # gap walks exactly these and nothing else.
+        tasks = sorted({m["task"] for m in misses})
+        print(f"\n{len(misses)} cell(s) SKIPPED on a cache miss across "
+              f"{len(tasks)} task(s) — phase 1 never produced what they need. "
+              f"They are unwritten and will re-walk. See "
+              f"{out_dir / 'misses.jsonl'}.\n"
+              f"  e.g. {', '.join(tasks[:5])}\n"
+              f"  first reason: {misses[0]['reason']}", file=sys.stderr)
+        return 3
     return 0
 
 
@@ -650,9 +739,14 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if args.limit:
         tasks = tasks[: args.limit]
 
-    # The patches to scan are whatever phase 1 drew for these tasks.
+    # The patches to scan are whatever phase 1 drew for these tasks — and
+    # phase 1 now writes one level deeper, where `shard.inputs()` cannot see
+    # it by design. The audit runs BETWEEN the two phases, so reading only the
+    # evidence namespace would have found nothing at exactly the moment this
+    # stage is meant to run. Both, with phase 2's rows second so a patch phase
+    # 1 drew is scanned whether or not an arm has replayed it yet.
     by_task: dict[str, list[str]] = {}
-    for row in read_rows(shard.inputs()):
+    for row in read_rows([*shard.phase_inputs("propose"), *shard.inputs()]):
         if row.patch_sha and row.task in set(tasks):
             by_task.setdefault(row.task, [])
             if row.patch_sha not in by_task[row.task]:
@@ -660,7 +754,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if not by_task:
         raise SystemExit(
             "no patches to audit — run `caster propose` first. The audit pass "
-            "scores the patch sequence phase 1 drew; it does not draw its own."
+            "scores the patch sequence phase 1 drew; it does not draw its own. "
+            f"Looked in {paths.DATA_REL}/shards/propose/*/rounds.jsonl and "
+            f"{paths.DATA_REL}/shards/*/rounds.jsonl."
         )
 
     matrix: dict[str, dict[str, dict[str, str]]] = {}
@@ -673,10 +769,24 @@ def cmd_audit(args: argparse.Namespace) -> int:
     out = paths.DATA_DIR / "kill_matrix.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(matrix, separators=(",", ":")), encoding="utf-8")
+    # A `timeout` verdict is written but NEVER SERVED (`VerdictStore.get`),
+    # so every one of these is a guaranteed cache miss in a `--replay-only`
+    # phase 2 — which used to kill the shard and now skips the cell. Counting
+    # them here is the difference between "the replay will be short by N
+    # cells" and finding out two stages later.
+    quarantined = sum(1 for task, by_sha in matrix.items()
+                      for sha, per in by_sha.items()
+                      for v in per.values() if v == "timeout")
     print(json.dumps({
         "tasks": len(matrix), "cost_digest": store.cost_digest(),
-        "concurrency": args.concurrency, **store.stats(), "out": str(out),
+        "concurrency": args.concurrency, **store.stats(),
+        "quarantined_timeout_verdicts": quarantined, "out": str(out),
     }, indent=2))
+    if quarantined:
+        print(f"note: {quarantined} (patch, probe) pair(s) ended in a timeout. "
+              f"A timeout is written but never served, so a --replay-only run "
+              f"will skip any cell whose schedule reaches one. Raise --timeout "
+              f"and re-audit, or expect those cells in GAPS.", file=sys.stderr)
     if args.remeasure_cost > 0:
         print(json.dumps(_remeasure(args, adapter, store, patches, matrix), indent=2))
     return 0
@@ -756,6 +866,17 @@ def _remeasure(args: argparse.Namespace, adapter: Any, store: Any,
     }
 
 
+def _control_tasks(frozen: dict[str, Any]) -> tuple[str, ...]:
+    """The declared control faults, or () when the corpus drew none.
+
+    Read here rather than through `gate.control_tasks` so a frozen document
+    written before `--control-size` existed — which has no `control` flag on
+    any task — is an empty tuple instead of a KeyError at merge time.
+    """
+    tasks = frozen.get("tasks") or {}
+    return tuple(sorted(n for n, t in tasks.items() if (t or {}).get("control")))
+
+
 def cmd_merge(args: argparse.Namespace) -> int:
     from caster.report.records import write_rows
     from caster.run import shard
@@ -763,7 +884,8 @@ def cmd_merge(args: argparse.Namespace) -> int:
     paths.announce("merge")
     frozen = _frozen(required=False) or {}
     audits, rows = shard.merge_audit(universe=tuple(frozen.get("pool_order", ())),
-                                     budget=args.budget)
+                                     budget=args.budget,
+                                     control=_control_tasks(frozen))
     for a in audits:
         print(a.render())
     bad = shard.fatal(audits)
@@ -791,8 +913,12 @@ def cmd_analyse(args: argparse.Namespace) -> int:
     frozen = _frozen(required=False) or {}
     doc = analyse.summarise(rows, budget=args.budget, pool_dir=paths.POOL_DIR,
                             universe=tuple(frozen.get("pool_order", ())),
+                            control=_control_tasks(frozen),
                             force_freeze=args.freeze_rates)
-    cs = analyse.cells(rows, budget=args.budget)
+    # The bootstrap reads the same main grid the tables do.
+    declared = set(_control_tasks(frozen))
+    cs = [c for c in analyse.cells(rows, budget=args.budget)
+          if c.task not in declared]
     doc["bootstrap"] = [
         analyse.bootstrap_cpu(cs, p, iterations=args.bootstrap)
         for p in sorted({c.policy for c in cs})
@@ -916,6 +1042,36 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _window_shortfall(window: int, model: str) -> list[tuple[str, int]]:
+    """Admitted tasks whose (source in + rewrite out) exceeds `window`.
+
+    Returns `(task, tokens needed)`, largest first. An unset window returns
+    nothing: with `LLM_CONTEXT_TOKENS=0` the per-call check is off by
+    configuration and there is no number to compare against.
+    """
+    from caster.steer.template import window_needed
+
+    if not window:
+        return []
+    frozen = _frozen(required=False) or {}
+    tasks = [t for t in frozen.get("pool_order", ())]
+    if not tasks:
+        return []
+    import argparse as _argparse
+
+    adapter = _adapter(_argparse.Namespace())
+    out: list[tuple[str, int]] = []
+    for name in tasks:
+        try:
+            source = adapter.program(name).buggy_source
+        except (OSError, FileNotFoundError, KeyError):
+            continue
+        need = window_needed(source, model=model or None)
+        if need > window:
+            out.append((name, need))
+    return sorted(out, key=lambda r: -r[1])
+
+
 def cmd_preflight(args: argparse.Namespace) -> int:
     """First thing in any session. Budget: zero. Exits non-zero, one line per failure."""
     import urllib.error
@@ -936,6 +1092,8 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             f"getrusage(RUSAGE_CHILDREN). Wall clock is contaminated by sibling "
             f"shards and makes m̂ a function of load."
         )
+
+    model = (args.gateway_url and "") or os.environ.get("MODEL", "").strip()
 
     pool = paths.POOL_DIR / "tasks.json"
     if not pool.is_file():
@@ -958,6 +1116,44 @@ def cmd_preflight(args: argparse.Namespace) -> int:
             notes.append("holdout 0 — oracle is the whole pool; success@B is a "
                          "PLAUSIBLE-patch rate, not a correctness rate")
 
+    # ── the output budget against the served window ────────────────────────
+    # G6 (`--lines-max`) is off by default, and the README's reason is that
+    # "the real constraint is the output budget, not a line count". That is
+    # true and it left the constraint UNMEASURED: with no screen, the corpus
+    # admits programs whose source plus its own rewrite does not fit the
+    # window, and the first anyone hears of it is `context_overflow` on every
+    # round of every seed of those tasks — followed, in a replay-only phase 2,
+    # by a cache miss on draws that were never made.
+    #
+    # The window is a config value, so this belongs in the stage whose job is
+    # config. One line, before anything long runs, naming the tasks and the
+    # window they would need.
+    window = int(os.environ.get("LLM_CONTEXT_TOKENS", 0) or 0)
+    if pool.is_file():
+        try:
+            over = _window_shortfall(window, model)
+        except Exception as exc:    # noqa: BLE001 - a missing corpus is not fatal here
+            notes.append(f"output-budget check skipped: {exc}")
+        else:
+            if not window:
+                notes.append("LLM_CONTEXT_TOKENS unset — the per-call window "
+                             "check is OFF, so an over-long prompt is "
+                             "TRUNCATED by the server instead of refused")
+            elif over:
+                need = max(n for _, n in over)
+                failures.append(
+                    f"{len(over)} admitted task(s) need more than the "
+                    f"{window}-token window declared here; the largest needs "
+                    f"{need}. Each burns every round of every seed as "
+                    f"context_overflow and leaves a cache miss behind it. "
+                    f"Raise LLM_CONTEXT_TOKENS and the server's num_ctx "
+                    f"together, or screen them out with `freeze --lines-max`: "
+                    + ", ".join(f"{t} ({n})" for t, n in over[:4])
+                )
+            else:
+                notes.append(f"output budget fits the {window}-token window "
+                             f"for every admitted task")
+
     for name, p in (("response cache", paths.CACHE_DIR),
                     ("verdict store", paths.VERDICT_DIR),
                     ("patch store", paths.PATCH_DIR)):
@@ -977,7 +1173,6 @@ def cmd_preflight(args: argparse.Namespace) -> int:
     else:
         notes.append(f"disk {free / 1024**3:.1f} GiB free")
 
-    model = (args.gateway_url and "") or os.environ.get("MODEL", "").strip()
     if not model:
         failures.append(
             "no MODEL set. `propose` and every steered arm die on the first "

@@ -136,14 +136,20 @@ def _facts_for(
     ledger: CaseLedger,
     k_facts: int,
     last: dict[str, ProbeVerdict],
-) -> list[template.Fact]:
+) -> tuple[list[template.Fact], tuple[str, ...]]:
     """Turn the ledger's evidence into renderable facts. No execution here.
 
-    `ledger.evidence` ranks by `K × legibility` and returns the **raw K**
-    (prompt rule 4), which is what reaches the prompt — the number there is a claim
-    about the world and must stay true.
+    `ledger.evidence` ranks by `K × legibility` and returns the posterior K
+    (prompt rule 4), which is what reaches the prompt — the number there is a
+    claim about the world and must stay true.
+
+    Returns the facts AND the probe names behind them, in the same order. The
+    names are what `facts_shown` is cut from: a probe whose case or reference
+    is unavailable is dropped here, so the selection and the render can differ
+    in length and only the render may be recorded as disclosed.
     """
     out: list[template.Fact] = []
+    names: list[str] = []
     for probe, k_rate in ledger.evidence(k_facts):
         case = adapter.case(task, probe)
         ref = adapter.reference(task, probe)
@@ -160,7 +166,8 @@ def _facts_for(
             last_error_type=seen.error_type if seen else None,
             last_error_message=seen.error_message if seen else None,
         ))
-    return out
+        names.append(probe)
+    return out, tuple(names)
 
 
 def _examples_for(adapter: Any, task: str) -> list[template.Example]:
@@ -211,6 +218,8 @@ def run_episode(
         prior=spec.prior,
         cold_start=spec.cold_start,
         explore_p=spec.explore_p,
+        overlap_thr=spec.overlap_thr,
+        overlap_min_rej=spec.overlap_min_rej,
         tie_key=tie,
         rng=random.Random(hashlib.sha256(f"schedule|{cell_key}".encode()).hexdigest()),
         input_chars=adapter.input_chars(spec.task),
@@ -249,18 +258,10 @@ def run_episode(
         )
 
     for round_index in range(1, cfg.budget + 1):
-        facts = (
+        facts, fact_names = (
             _facts_for(adapter, spec.task, ledger, spec.k_facts, last_obs)
-            if spec.steer_on else []
+            if spec.steer_on else ([], ())
         )
-        # What the prompt SHOWED, captured before the scan runs and updates the
-        # ledger. the exploitability bound ("patches refuted only by the
-        # disclosed probes") is computed from exactly this field, so reading it
-        # back off the post-update ledger would be off by one round — and
-        # emitting it at all for an unsteered arm would attribute a disclosure
-        # that never happened. These fields are null when steering is off.
-        shown = tuple(p for p, _ in ledger.evidence(spec.k_facts)) if (
-            spec.steer_on and facts) else ()
         prompt = template.build(
             program_label=spec.task,
             buggy_source=program.buggy_source,
@@ -277,6 +278,20 @@ def run_episode(
             transcript=transcript if spec.steer_mode == "chat" else (),
             transcript_cap_tokens=spec.transcript_cap_tokens,
         )
+
+        # What the prompt ACTUALLY SHOWED, captured before the scan runs and
+        # updates the ledger. The exploitability bound ("patches refuted only
+        # by the disclosed probes") is computed from exactly this field, so:
+        #  * reading it back off the post-update ledger would be off by one
+        #    round;
+        #  * emitting it for an unsteered arm would attribute a disclosure that
+        #    never happened;
+        #  * and reading the SELECTION rather than the RENDER would do the same
+        #    for `disclosure="sample-only"`, where `s5_contract` withholds the
+        #    whole block and k facts are selected but none are disclosed.
+        # `k_facts_rendered` is the only field that knows what survived to the
+        # page, so it is what cuts the list. Null when steering is off.
+        shown = fact_names[:prompt.k_facts_rendered] if spec.steer_on else ()
 
         ref_runs_round = adapter.reference_runs
         meta = CallMeta()

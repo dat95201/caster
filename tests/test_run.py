@@ -42,9 +42,9 @@ def test_every_arm_in_the_spec_exists():
     """The two tables, as a membership assertion."""
     block_a = {"full-suite", "no-mem", "natural", "random", "fault-record",
                "cost-only", "kill-only", "coverage", "km", "km-cs-median",
-               "km-cs-q75", "km-bucket", "km-explore0"}
+               "km-cs-q75", "km-bucket", "km-explore0", "km-ov0"}
     block_b = {"km+steer", "km+steer-pass", "km+exclusion", "km+chat",
-               "km+steer-k1", "km+steer-k3", "km+steer-sample", "km+steer-noreq",
+               "km+steer-k1", "km+steer-k2", "km+steer-sample", "km+steer-noreq",
                "km+steer+vs"}
     assert block_a | block_b == set(policies.ARMS)
     assert {a.arm_id for a in policies.BLOCK_A} == block_a
@@ -539,7 +539,7 @@ def test_round_one_is_one_shared_draw_across_arms(
     SAME nonce and the SAME prompt for round 1."""
     store, patches = stores
     seen = {}
-    for arm_id in ("no-mem", "km", "km+steer", "km+steer-k3"):
+    for arm_id in ("no-mem", "km", "km+steer", "km+steer-k2"):
         client = fake_client(default_source="n=int(input())\nprint(n*3)\n")
         run_episode(policies.arm(arm_id).cell("abc001_a/1001", 0),
                     adapter=adapter, client=client, store=store, patches=patches,

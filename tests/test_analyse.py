@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 
 from caster.report import analyse, charts
+from caster.run import policies
 from caster.report.records import RoundRecord
 
 
@@ -49,11 +50,21 @@ def test_proposal_errors_are_split_by_arm_and_by_model():
 
 
 def test_a_steered_arm_below_its_configured_k_is_flagged():
-    """An arm below its configured k is reporting a different treatment."""
+    """An arm below its configured k is reporting a different treatment.
+
+    `configured_k` is read off the roster, so this asserts against the arm
+    rather than against a literal: the default moved 2 -> 3 (DECISIONS 34) and
+    the only thing that had to change here was the expected number. Under
+    deduplication and a thin pool of proven refuters this gap is now the COMMON
+    case, not the exceptional one — which is why the k-sweep is read against
+    `realised_k_mean` and this flag is the thing that makes that readable.
+    """
+    configured = policies.arm("km+steer").cell("t", 0).k_facts
     rows = [row(policy="km+steer", r=1, patch_sha="s", k_facts=1),
             row(policy="km+steer", r=2, patch_sha="s", k_facts=1)]
     (entry,) = analyse.k_facts_table(analyse.cells(rows, budget=5))
-    assert entry["configured_k"] == 2 and entry["realised_k_mean"] == 1.0
+    assert entry["configured_k"] == configured == 3
+    assert entry["realised_k_mean"] == 1.0
     assert entry["mislabelled"] is True
 
 

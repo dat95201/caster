@@ -47,10 +47,10 @@ persistence and a shard fleet.
 | verb | what it does |
 |---|---|
 | `freeze` | applies the corpus gate, writes `pool/tasks.json` + `pool_sha256`. **No pre-treatment screen runs by default** — every sound fault is admitted, the oracle is the whole pool, and `analyse` bands by pool size and contest era afterwards. `--holdout 0.3` draws a `P_eval` for measuring overfitting |
-| `propose` | **phase 1** — fills the response cache and the patch store. Block A only |
+| `propose` | **phase 1** — fills the response cache and the patch store. Block A only. Writes under `data/<run>/propose/`, which `merge` cannot reach: its rows are a by-product of filling the stores, not an arm's result |
 | `evaluate` | **phase 2** — walks `(task × seed × policy)`, resumably, writing atomic cells. `--from-cache-only` refuses to call the model; `--replay-only` refuses to run the sandbox too; `--control` walks the unfiltered control arm |
 | `audit` | the dedicated full-scan pass: the kill matrix and the frozen cost table |
-| `merge` | the six audits, then collapses the shards. Nothing is evidence before this |
+| `merge` | the audits, then collapses the shards. Nothing is evidence before this |
 | `analyse` | threats first, then the arms, the decomposition and the bootstrap |
 | `report` | one self-contained HTML file, no network |
 | `serve` | `start \| verify \| unload \| stop \| gateway` — local backends and routing |

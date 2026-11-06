@@ -8,6 +8,7 @@ tasks nobody re-reads row by row.
 from __future__ import annotations
 
 import json
+import random
 
 import pytest
 
@@ -837,3 +838,566 @@ def test_coalescing_survives_a_proxy_that_normalises_header_case():
     gw.coalescer.begin("k2")
     gw.forward(b"{}", {"X-Caster-Cache-Key": "k2"})
     assert gw.stats["coalesced"] == 2
+
+
+# ── the phases shared one namespace, and the skip was silent ─────────────────
+
+
+def test_propose_and_evaluate_do_not_share_a_shard_namespace(tmp_path):
+    """`evaluate` resumed from `propose`'s done-index and skipped every cell
+    phase 1 had walked.
+
+    The phase is in no key: `CellSpec` has no such field and `episode_id` is a
+    hash of that key, so the two phases produce identical cell keys and
+    `needs_walk` returned False. The arm they shared was never evaluated, its
+    phase-1 rows merged in its place, and the soundness audit — not the
+    pipeline — is what eventually said so.
+    """
+    from caster.run import shard
+
+    ev = shard.shard_dir(0, tmp_path, phase="evaluate")
+    pr = shard.shard_dir(0, tmp_path, phase="propose")
+    assert ev != pr, "both phases would write the same three files"
+
+    for d in (ev, pr):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "cells.done").write_text("")
+        (d / "rounds.jsonl").write_text("")
+        (d / "meta.json").write_text("{}")
+
+    # A phase resumes from its OWN done-index and no other's.
+    assert shard.done_inputs(tmp_path, phase="evaluate") == [ev / "cells.done"]
+    assert shard.done_inputs(tmp_path, phase="propose") == [pr / "cells.done"]
+
+    # And phase-1 rows are not evidence: they cannot reach a merge.
+    assert shard.inputs(tmp_path) == [ev / "rounds.jsonl"]
+
+
+def test_the_default_phase_keeps_the_flat_layout(tmp_path):
+    """Runs collected before the phases were split must still resolve."""
+    from caster.run import shard
+
+    assert shard.shard_dir(3, tmp_path) == tmp_path / "shards" / "s03"
+    assert shard.shard_dir(3, tmp_path, phase="evaluate") == tmp_path / "shards" / "s03"
+
+
+# ── an audit that truncates its own finding ──────────────────────────────────
+
+
+def test_a_truncated_audit_listing_says_how_many_it_hid():
+    """GAPS printed `items[:12]` with no indication there were more.
+
+    Arms are listed alphabetically, so the twelve lines shown were the first
+    four arms — which reads as "four arms are short" when every arm was short.
+    An operator re-ran the four and merged again.
+    """
+    from caster.run.shard import _listing
+
+    short = _listing(["a", "b"], 12)
+    assert "more" not in short
+
+    long = _listing([f"arm{i}" for i in range(40)], 12)
+    assert "arm11" in long and "arm12" not in long
+    assert "28 more" in long
+    assert "NOT the complete set" in long
+
+
+# ── the draw path re-read the same files once per arm ────────────────────────
+
+
+def test_the_patch_store_does_not_reread_the_same_sha(tmp_path):
+    """Under CRN every Block A arm replays the SAME patch for a given
+    (task, seed, round), so a non-memoised read is paid once per arm."""
+    from caster.exec.store import PatchStore
+
+    store = PatchStore(tmp_path)
+    sha = store.put("print(1)\n")
+    assert store.get(sha) == "print(1)\n"
+
+    # Delete the file: a memoised store still answers, a re-reading one cannot.
+    store._path(sha).unlink()
+    assert store.get(sha) == "print(1)\n", "the sha was re-read from disk"
+
+
+def test_the_response_cache_memoises_hits_but_not_misses(tmp_path, monkeypatch):
+    """A miss must stay a miss until something writes the key, or a live call
+    followed by a read in the same process would not see its own write."""
+    from caster.llm.client import LLMClient
+
+    monkeypatch.setenv("BUDGET_USD_CAP", "0")
+    client = LLMClient(model="m", cache_dir=tmp_path / "cache",
+                       calls_log=tmp_path / "calls.jsonl")
+
+    assert client.cached("deadbeef") is None          # miss, not memoised
+    client._write_cache("deadbeef", {"text": "x"})
+    assert client.cached("deadbeef") == {"text": "x"}  # the write is visible
+
+    # A hit is memoised: the file can go and the answer stays.
+    client._cache_path("deadbeef").unlink()
+    assert client.cached("deadbeef") == {"text": "x"}
+
+
+# ── the pilot review: six defects, each of which produced a wrong number ─────
+
+
+def test_the_cell_key_records_the_model_that_actually_drew(monkeypatch):
+    """`--model` defaulted to "" and `LLMClient` fell back to `$MODEL`.
+
+    So every CellSpec was keyed `model=`, while the patches were drawn by
+    whatever `$MODEL` named. Two models then produce the IDENTICAL
+    `episode_id`: `needs_walk` calls the second one already done and never
+    walks it, and `collapse` — last write wins — keeps whichever row file is
+    read first. That is a silent overwrite of a finished grid, and the only
+    visible symptom was an empty `model` column in the report.
+    """
+    from caster.cli import _grid, build_parser
+
+    monkeypatch.setenv("MODEL", "qwen2.5-coder:7b")
+    args = build_parser().parse_args(
+        ["evaluate", "--policies", "km", "--seeds", "0", "--tasks", "t/1"])
+    grid = _grid(args, {"pool_order": ["t/1"]})
+    assert grid.model == "qwen2.5-coder:7b"
+    cell = grid.cells()[0]
+    assert cell.model == "qwen2.5-coder:7b"
+    assert "model=qwen2.5-coder:7b" in cell.key()
+
+    monkeypatch.setenv("MODEL", "qwen2.5-coder:3b")
+    other = _grid(build_parser().parse_args(
+        ["evaluate", "--policies", "km", "--seeds", "0", "--tasks", "t/1"]),
+        {"pool_order": ["t/1"]}).cells()[0]
+    assert other.episode_id != cell.episode_id, (
+        "two models share one episode_id — the second grid would be skipped as "
+        "'already done' and the first's rows silently replaced")
+
+
+def test_the_key_version_is_a_hard_stop_at_merge(tmp_path):
+    """The driver's docstring promised it; `PROTOCOL_FIELDS` did not carry it.
+
+    The ROW does not hold the key version — it holds the CellSpec fields,
+    which are identical across versions — so v3 and v4 rows differ only in
+    `episode_id` and pooled into one cell at `analyse.cells()`, which groups
+    on `(task, seed, policy)`.
+    """
+    from caster.run import shard
+
+    def meta(version: int) -> dict:
+        return {"protocol": {"model": "m", "temperature": 1.0,
+                             "reasoning_effort": None, "key_version": version},
+                "runtime": {}}
+
+    audits = shard.audit_protocol([], records=[("s00", meta(3)), ("s01", meta(4))])
+    clash = next(a for a in audits if a.name == "protocol disagreement")
+    assert not clash.ok and clash.fatal
+    assert any("key_version" in item for item in clash.items)
+
+
+def test_phase_one_rows_cannot_reach_the_merge(tmp_path):
+    """`no-mem` is the phase-1 arm AND a Block A arm.
+
+    Sharing `shards/*/cells.done` made resume skip it in phase 2, so its
+    phase-1 rows — full budget, cold verdict store, live sandbox, collected
+    before `caster audit` corrected a quarantined timeout — were merged as if
+    they were an evaluation. `audit_soundness` then reported
+    `no-mem=False@None` against twelve arms at `True@1`: Invariant 2 failing on
+    an artefact of where the rows were written.
+    """
+    from caster.run import shard
+
+    run = tmp_path / "data" / "run"
+    evaluate = shard.shard_dir(0, run, phase="evaluate")
+    propose = shard.shard_dir(0, run, phase="propose")
+    for d in (evaluate, propose):
+        d.mkdir(parents=True)
+        (d / "rounds.jsonl").write_text("{}\n", encoding="utf-8")
+        (d / "cells.done").write_text("{}\n", encoding="utf-8")
+
+    assert propose != evaluate
+    assert shard.inputs(run) == [evaluate / "rounds.jsonl"], (
+        "phase-1 rows are reachable by the merge glob")
+    assert shard.done_inputs(run, phase="evaluate") == [evaluate / "cells.done"], (
+        "phase-1 cells.done blocks a phase-2 re-walk")
+    assert shard.done_inputs(run, phase="propose") == [propose / "cells.done"]
+    assert shard.phase_inputs("propose", run) == [propose / "rounds.jsonl"], (
+        "caster audit cannot find the patch sequence phase 1 drew")
+
+
+def test_a_cache_miss_skips_one_cell_rather_than_the_whole_range(
+        adapter, frozen, run_dir, stores, fake_client):
+    """A `CacheMiss` left `run_episode` uncaught and killed the shard PROCESS.
+
+    One cell whose phase-1 draw hit `context_overflow` — or whose probe is
+    stored as a quarantined `timeout`, which `VerdictStore.get` never serves —
+    therefore cost every later task in that shard's range, across every arm.
+    That is "49 task(s) missing" in all twelve arms from a handful of bad
+    cells. The cell must be abandoned whole and the walk must continue.
+    """
+    from caster.errors import CacheMiss
+    from caster.llm.client import LLMClient
+    from caster.run.driver import Grid, walk
+
+    store, patches = stores
+    grid = Grid(tasks=("abc001_a/1001",), seeds=(0, 1), policies=("km",),
+                budget=2, model="fake")
+    client = LLMClient(model="fake", cache_dir=run_dir.CACHE_DIR,
+                       calls_log=run_dir.CALLS_LOG)
+    rows = run_dir.DATA_DIR / "shards" / "s00" / "rounds.jsonl"
+    done = rows.parent / "cells.done"
+    misses: list[dict] = []
+    from caster.run.episode import EpisodeConfig
+
+    results = list(walk(grid, grid.cells(), adapter=adapter, client=client,
+                        rows_path=rows, done_path=done,
+                        cfg=EpisodeConfig(budget=2, from_cache_only=True),
+                        misses=misses))
+    assert results == [], "a miss must not produce a cell"
+    assert len(misses) == len(grid.cells()), "the walk stopped at the first miss"
+    assert not done.exists() or not done.read_text().strip(), (
+        "a skipped cell was indexed as done and will never be re-walked")
+    assert (rows.parent / "misses.jsonl").is_file()
+
+    with pytest.raises(CacheMiss):
+        list(walk(grid, grid.cells(), adapter=adapter, client=client,
+                  rows_path=rows, done_path=done,
+                  cfg=EpisodeConfig(budget=2, from_cache_only=True),
+                  on_cache_miss="stop"))
+
+
+def test_a_second_launch_cannot_erase_the_first_ones_protocol(tmp_path):
+    """`meta.json` was rewritten per launch; `rounds.jsonl` was appended to.
+
+    So a shard index reused under a different sandbox timeout or served window
+    left one record describing the second launch and two launches' rows under
+    it — and the two audits that exist to catch instrument drift had nothing
+    to compare. They must see the history, and a conflicting launch must be
+    refused before it writes a row.
+    """
+    import json as _json
+
+    from caster.run import shard
+    from caster.run.driver import write_meta
+
+    out = tmp_path / "s00"
+    first = {"protocol": {"model": "m", "temperature": 1.0,
+                          "reasoning_effort": None, "key_version": 4},
+             "runtime": {"sandbox_timeout_sec": 60.0}}
+    write_meta(first, out / "meta.json")
+    (out / "rounds.jsonl").write_text('{"task":"t"}\n', encoding="utf-8")
+
+    second = _json.loads(_json.dumps(first))
+    second["runtime"]["sandbox_timeout_sec"] = 10.0
+    clash = shard.meta_conflict(second, out)
+    assert "sandbox_timeout_sec" in clash and "60.0" in clash and "10.0" in clash
+    assert shard.meta_conflict(first, out) == "", "an identical relaunch is fine"
+
+    write_meta(first, out / "meta.json")
+    history = (out / "meta.jsonl").read_text(encoding="utf-8").splitlines()
+    assert len(history) == 2, "the per-launch history is not append-only"
+
+
+def test_the_coverage_audit_sees_an_arm_that_produced_nothing():
+    """`arms` was derived from the rows being audited.
+
+    An arm with zero rows has no cells to be missing from, so it never
+    appeared in GAPS and a grid short of a whole arm reported complete. And
+    `gaps[:12]` printed twelve lines with no count, so twelve arms each short
+    of the same 49 tasks looked like four.
+    """
+    from caster.report.records import RoundRecord
+    from caster.run import shard
+
+    rows = [RoundRecord(run_id="r", episode_id="e", task="t/1", seed=0,
+                        round_index=1, policy="km")]
+    audits = shard.audit_coverage(rows, ["t/1", "t/2"], budget=1,
+                                  arms=["km", "natural"], seeds=[0, 1])
+    by_name = {a.name: a for a in audits}
+    assert not by_name["NO ROWS"].ok
+    assert by_name["NO ROWS"].items == ["natural"]
+    gaps = by_name["GAPS"]
+    assert not gaps.ok and len(gaps.items) == 4      # 2 arms x 2 seeds
+    assert gaps.detail.startswith("4 arm/seed pair(s)")
+
+
+def test_one_output_ceiling_not_two():
+    """`propose.draw` carried a bare `16_000` beside `template.MAX_BUDGET`.
+
+    With G6 (`--lines-max`) off the corpus admits programs the old ceiling
+    could not rewrite, and the second copy meant raising the ceiling changed
+    nothing on the k>1 arms — and clipped a reasoning model back to the chat
+    ceiling on every draw.
+    """
+    import inspect
+
+    from caster.run import propose
+
+    body = "\n".join(line for line in inspect.getsource(propose.draw).splitlines()
+                     if not line.lstrip().startswith("#"))
+    assert "16_000" not in body and "16000" not in body
+    assert template.output_ceiling("qwen2.5-coder:7b") == template.MAX_BUDGET
+    assert template.output_ceiling("o3-mini") == template.MAX_BUDGET_REASONING
+
+    long_source = "x = 1\n" * 12_000          # ~72 KB, like the corpus tail
+    assert template.budget_for_source(long_source) > 16_000
+    # and the window has to hold the source AND the rewrite, which is why
+    # raising the ceiling alone does not admit the program.
+    assert template.window_needed(long_source) > 2 * 16_000
+
+
+def test_the_analysis_does_not_pool_two_arms_that_differ_off_the_grouping_key():
+    """`analyse.cells` grouped on `(task, seed, policy)`.
+
+    `keys.py` names this failure in its own docstring: every arm differing
+    only in a field the grouping does not pin collapses onto one key, last
+    write wins, and the winner is decided by sort order. Two are live — the
+    pre-registered prior pair sweeps `prior` across the same
+    `(task, seed, policy)`, and `model` is in the cell key — so a `jeffreys`
+    cell and a `shipped` cell were averaged into one.
+    """
+    from caster.report.analyse import cells
+    from caster.report.records import RoundRecord
+
+    def row(prior: str, accept: bool) -> RoundRecord:
+        spec = policies.arm("km").cell("t/1", 0, prior=prior)
+        return RoundRecord(run_id="r", episode_id=spec.episode_id, task="t/1",
+                           seed=0, round_index=1, policy="km",
+                           cell=spec.as_dict(), accept=accept, patch_sha="a")
+
+    out = cells([row("shipped", True), row("jeffreys", False)])
+    assert len(out) == 2, "two priors were pooled into one cell"
+    assert {c.accepted for c in out} == {True, False}
+
+
+def test_the_control_arm_does_not_brick_the_merge():
+    """`caster evaluate --control` made `caster merge` fail for good.
+
+    The control arm's faults are deliberately NOT in `pool_order` — that is
+    what stops a corpus-wide average picking them up — and `--control` writes
+    them into the evidence namespace. `FOREIGN` is fatal on any task outside
+    the universe, so from the first control pass onward every merge ended
+    "1 FATAL audit ... Nothing was written", blaming "a shard cut from a
+    different corpus". A declared control fault is not a foreign one.
+    """
+    from caster.report.records import RoundRecord
+    from caster.run import shard
+
+    def row(task: str) -> RoundRecord:
+        return RoundRecord(run_id="r", episode_id=task, task=task, seed=0,
+                           round_index=1, policy="km")
+
+    rows = [row("t/1"), row("ctl/9")]
+    hard = {a.name: a for a in shard.audit_coverage(rows, ["t/1"], budget=1)}
+    assert not hard["FOREIGN"].ok and hard["FOREIGN"].fatal
+
+    audits = shard.audit_coverage(rows, ["t/1"], budget=1, control=["ctl/9"])
+    soft = {a.name: a for a in audits}
+    assert soft["FOREIGN"].ok, "a declared control fault is still fatal"
+    ctl = next(a for a in audits if a.name.startswith("CONTROL ARM"))
+    assert ctl.ok and ctl.items == ["ctl/9"], (
+        "an intended control pass must not render as a warning")
+    assert "1 fault(s)" in ctl.name
+    assert "ctl/9" not in " ".join(soft["GAPS"].items)
+
+
+def test_the_control_arm_does_not_move_the_headline_table():
+    """`analyse` filtered control faults out of the BAND tables only.
+
+    `arms`, `decomposition`, `survival`, `repair_rates` and
+    `floor_arm_complete` all read every cell, so running the control arm —
+    whose faults are the ones a pool-size threshold would have cut — moved the
+    headline numbers. "Never pooled with the main grid" has to hold for the
+    main grid too.
+    """
+    from caster.report.analyse import summarise
+    from caster.report.records import RoundRecord
+
+    def row(task: str, policy: str, accept: bool) -> RoundRecord:
+        spec = policies.arm(policy).cell(task, 0)
+        return RoundRecord(run_id="r", episode_id=spec.episode_id, task=task,
+                           seed=0, round_index=1, policy=policy,
+                           cell=spec.as_dict(), accept=accept, patch_sha="a")
+
+    main = [row("t/1", "no-mem", True), row("t/1", "km", True)]
+    both = main + [row("ctl/9", "no-mem", False), row("ctl/9", "km", False)]
+
+    a = summarise(main, budget=1, universe=["t/1"])
+    b = summarise(both, budget=1, universe=["t/1"], control=["ctl/9"])
+    assert a["arms"] == b["arms"], "the control arm moved the main arm table"
+    assert a["repair_rates"] == b["repair_rates"]
+    assert b["control_arm"]["tasks"] == ["ctl/9"]
+    assert b["control_arm"]["cells"] == 2
+
+
+# ── the overlap term ─────────────────────────────────────────────────────────
+#
+# Added after the pilot replay. `K` is a marginal rate; under fail-fast the
+# quantity that decides cost is conditional on what has already passed.
+
+
+def _led(names=("a", "b", "c"), **kw):
+    from caster.exec.ledger import CaseLedger
+    return CaseLedger(names, **kw)
+
+
+def test_overlap_is_containment_and_asymmetric():
+    """|R(x) ∩ R(a)| / |R(x)| — a narrow probe hides inside a broad one, not
+    the other way round. Jaccard would make both directions equal and would
+    let a broad probe be suppressed by a narrow one."""
+    led = _led()
+    for p in ("p1", "p2", "p3"):
+        led.update("a", refuted=True, cpu_s=0.1, patch=p)
+    for p in ("p1", "p2"):
+        led.update("b", refuted=True, cpu_s=0.1, patch=p)
+    assert led.overlap("b", "a") == 1.0
+    assert led.overlap("a", "b") == pytest.approx(2 / 3)
+
+
+def test_overlap_needs_evidence_before_it_suppresses():
+    led = _led(overlap_min_rej=2)
+    led.update("a", refuted=True, cpu_s=0.1, patch="p1")
+    led.update("b", refuted=True, cpu_s=0.1, patch="p1")
+    # b has one refutation; min_rej is 2, so it reports no overlap at all
+    assert led.overlap("b", "a") == 0.0
+    assert not led.redundant("b", ["a"])
+
+
+def test_update_without_a_patch_degrades_to_plain_km():
+    """Every pre-existing caller omits `patch`. That must leave the rule inert
+    rather than making it read an empty set as agreement."""
+    led = _led()
+    led.update("a", refuted=True, cpu_s=0.1)
+    led.update("b", refuted=True, cpu_s=0.1)
+    assert led.overlap("b", "a") == 0.0
+    assert not led.redundant("b", ["a"])
+
+
+def test_redundant_is_conditional_on_a_PASS():
+    led = _led()
+    for p in ("p1", "p2"):
+        led.update("a", refuted=True, cpu_s=0.1, patch=p)
+        led.update("b", refuted=True, cpu_s=0.1, patch=p)
+    assert led.redundant("b", ["a"])
+    assert not led.redundant("b", [])          # nothing passed yet
+    assert not led.redundant("b", ["c"])       # c has no record
+
+
+def test_overlap_thr_zero_disables_the_rule():
+    led = _led(overlap_thr=0.0)
+    for p in ("p1", "p2"):
+        led.update("a", refuted=True, cpu_s=0.1, patch=p)
+        led.update("b", refuted=True, cpu_s=0.1, patch=p)
+    assert not led.redundant("b", ["a"])
+
+
+def test_evidence_drops_a_near_duplicate_fact():
+    """Two facts refuting the same patches spend two prompt slots to say one
+    thing. The lower-ranked copy is dropped and the next DISTINCT refuter takes
+    the slot — the point of raising the default to k=3."""
+    led = _led(("a", "b", "c"))
+    for p in ("p1", "p2", "p3"):
+        led.update("a", refuted=True, cpu_s=0.1, patch=p)
+    for p in ("p1", "p2", "p3"):
+        led.update("b", refuted=True, cpu_s=0.1, patch=p)   # a's twin
+    led.update("c", refuted=True, cpu_s=0.1, patch="p9")
+    shown = [n for n, _ in led.evidence(3)]
+    assert "b" not in shown, "a near-duplicate fact took a slot"
+    assert shown == ["a", "c"]
+
+
+def test_evidence_keeps_distinct_facts_up_to_k():
+    led = _led(("a", "b", "c"))
+    led.update("a", refuted=True, cpu_s=0.1, patch="p1")
+    led.update("b", refuted=True, cpu_s=0.1, patch="p2")
+    led.update("c", refuted=True, cpu_s=0.1, patch="p3")
+    assert len(led.evidence(3)) == 3
+
+
+def test_seed_overlap_moves_only_the_rejection_sets():
+    """A carried table must not also move K or m̂, or the arm measures two
+    changes at once."""
+    led = _led()
+    led.update("a", refuted=False, cpu_s=0.5)
+    k_before, m_before = led.K("a"), led.M("a")
+    led.seed_overlap({"a": ["p1", "p2"], "b": ["p1", "p2"]})
+    assert led.K("a") == k_before and led.M("a") == m_before
+    assert led.overlap("b", "a") == 1.0
+
+
+def test_k_facts_default_is_three_and_overlap_is_in_the_cell_key():
+    from caster.keys import CellSpec
+    spec = CellSpec(task="t", seed=0, policy="km")
+    assert spec.k_facts == 3
+    assert spec.overlap_thr == 0.75
+    assert "overlap_thr" in spec.as_dict()
+    off = CellSpec(task="t", seed=0, policy="km", overlap_thr=0.0)
+    assert spec.key() != off.key(), "the ablation must not share the key"
+
+
+def test_km_ov0_is_the_ablation_of_exactly_one_clause():
+    from caster.run import policies
+    assert policies.arm("km-ov0").overrides == {"overlap_thr": 0.0}
+    assert "km-ov0" in policies.SOUNDNESS_EQUIVALENT
+
+
+def _walk(order, redundant, n_pass):
+    """The scan loop's control flow, isolated from the benchmark.
+
+    Mirrors `caster.exec.verify.scan`'s queue discipline exactly: the rule is
+    inert until something has PASSED, a probe may be pushed back at most once,
+    and a probe that has spent its deferral is taken by the `pop(0)` fallback.
+    """
+    pending, passed, deferred, ran = list(order), [], set(), []
+    guard = 0
+    while pending:
+        guard += 1
+        assert guard <= 10 * len(order) + 10, "walk did not terminate"
+        probe = None
+        if passed:
+            for i, cand in enumerate(pending):
+                if cand in deferred:
+                    continue
+                if redundant(cand, passed):
+                    deferred.add(cand)
+                    continue
+                probe = pending.pop(i)
+                break
+        if probe is None:
+            probe = pending.pop(0)
+        ran.append(probe)
+        if len(ran) <= n_pass:
+            passed.append(probe)
+    return ran, deferred
+
+
+def test_a_deferred_probe_runs_on_its_second_turn():
+    """One deferral, not a standing exclusion. `a` is first so nothing has
+    passed and it cannot be deferred; it passes; `x` is a copy of it and goes
+    behind `y`; then `x` runs."""
+    ran, deferred = _walk(["a", "x", "y"], lambda c, p: c == "x", 3)
+    assert ran == ["a", "y", "x"]
+    assert deferred == {"x"}
+
+
+def test_deferred_probes_keep_the_policy_order_among_themselves():
+    ran, _ = _walk(["a", "x1", "x2", "y"], lambda c, p: c.startswith("x"), 4)
+    assert ran == ["a", "y", "x1", "x2"]
+
+
+def test_every_probe_runs_exactly_once_whatever_the_rule_says():
+    """The walk terminates and drops nothing, for any redundancy predicate.
+    Soundness rests on this: an accepting round must still run the whole pool,
+    so ordering cannot change acceptance (Invariant 2)."""
+    rng = random.Random(0)
+    for _ in range(2000):
+        n = rng.randint(1, 8)
+        order = [f"p{i}" for i in range(n)]
+        red = set(rng.sample(order, rng.randint(0, n)))
+        ran, _ = _walk(order, lambda c, p: c in red, n)
+        assert sorted(ran) == sorted(order)
+
+
+def test_the_rule_cannot_fire_on_the_first_probe_of_a_round():
+    """It is conditional on a PASS. With nothing passed there is no `A`, so the
+    head of the queue runs however redundant it would later look — which is
+    what keeps round 1 of every arm identical (`schedule_tie_rank`)."""
+    ran, deferred = _walk(["x", "y"], lambda c, p: True, 2)
+    assert ran == ["x", "y"]
+    assert "x" not in deferred, "the first probe of a round was deferred"

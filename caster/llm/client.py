@@ -218,6 +218,10 @@ class LLMClient:
         #: running under a different RUN_DIR, which would make `caster smoke
         #: --live` report a real call as a cache hit.
         self.live_calls = 0
+        #: In-process memo of the on-disk response cache. Only HITS are stored,
+        #: so a miss followed by a live call and a write is still seen by the
+        #: next read. See `cached()` for why this exists.
+        self._mem_cache: dict[str, dict[str, Any]] = {}
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.calls_log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -229,6 +233,24 @@ class LLMClient:
         return self.cache_dir / key[:2] / f"{key}.json"
 
     def cached(self, key: str) -> dict[str, Any] | None:
+        """One cache entry, memoised for the life of this client.
+
+        Under CRN the draw nonce is `task|seed|round` and carries no policy, so
+        every Block A arm asks for the SAME key: on a 12-arm grid 92% of these
+        reads are the same file, re-stat'd and re-parsed. The store already
+        memoises verdicts this way (`VerdictStore._mem`); this is the same
+        trick on the draw path, and it is what makes a replay stage I/O-cheap.
+        Entries are small (~1 KB) and bounded by the number of distinct draws.
+        """
+        hit = self._mem_cache.get(key)
+        if hit is not None:
+            return hit
+        blob = self._cached_uncached(key)
+        if blob is not None:
+            self._mem_cache[key] = blob
+        return blob
+
+    def _cached_uncached(self, key: str) -> dict[str, Any] | None:
         path = self._cache_path(key)
         if not path.is_file():
             # Flat layout, so an installed artifact bundle still resolves.
@@ -255,6 +277,10 @@ class LLMClient:
         tmp = path.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(blob), encoding="utf-8")
         os.replace(tmp, path)
+        # Keep the memo in step with the file this process just wrote, so a
+        # re-read in the same process does not go back to disk for a blob it
+        # already has.
+        self._mem_cache[key] = blob
 
     # ── the spend ledger ────────────────────────────────────────────────────
 
@@ -339,9 +365,15 @@ class LLMClient:
         estimate = math.ceil(len(prompt) / CHARS_PER_TOKEN * BUDGET_MARGIN)
         if estimate + max_tokens > self.context_tokens:
             raise ContextOverflow(
-                f"~{estimate} prompt + {max_tokens} output tokens exceeds the "
-                f"{self.context_tokens}-token window. Raise the server's own "
-                f"window rather than letting it truncate the prompt."
+                f"~{estimate} prompt + {max_tokens} output tokens needs a "
+                f"{estimate + max_tokens}-token window; this backend serves "
+                f"{self.context_tokens}. Raise the SERVER's window "
+                f"(LLM_CONTEXT_TOKENS and ollama's num_ctx move together) "
+                f"rather than letting it truncate the prompt — clipping "
+                f"max_tokens here instead would put the served window into the "
+                f"cache key, which Invariant 13 keeps it out of. With G6 off "
+                f"the corpus admits programs no feasible window can hold; "
+                f"`caster preflight` lists them before a grid starts."
             )
 
     def complete(

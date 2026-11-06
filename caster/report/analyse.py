@@ -116,12 +116,23 @@ def cells(rows: Iterable[RoundRecord], *, budget: int | None = None) -> list[Cel
     comparable to the arms it is tabulated against ("draw full, truncate
     at analysis"). Without it, π̂ would be read off a curve of a different B.
     """
-    grouped: dict[tuple[str, int, str], list[RoundRecord]] = {}
+    # Keyed on `episode_id` as well as `(task, seed, policy)`, which is the
+    # failure `keys.py` names in its own docstring: "re-deriving a cell key by
+    # hand from a few pinned fields and keying on `(task, seed)`. Every arm
+    # differing only in an unpinned field collapses onto one key". Two of
+    # those are live right now — the pre-registered prior pair sweeps `prior`
+    # across the same `(task, seed, policy)`, and `model` is in the key but
+    # was not in this grouping — so both were being averaged into one cell
+    # with the winner decided by sort order. `episode_id` is a hash of the
+    # WHOLE key, so it separates exactly what the key separates and nothing
+    # else: a cell topped up from B=12 to B=20 keeps one id, because `budget`
+    # is deliberately not in the key.
+    grouped: dict[tuple[str, int, str, str], list[RoundRecord]] = {}
     for r in rows:
-        grouped.setdefault((r.task, r.seed, r.policy), []).append(r)
+        grouped.setdefault((r.task, r.seed, r.policy, r.episode_id), []).append(r)
 
     out: list[Cell] = []
-    for (task, seed, policy), rs in sorted(grouped.items()):
+    for (task, seed, policy, _episode), rs in sorted(grouped.items()):
         rs.sort(key=lambda r: (r.round_index, r.candidate_index))
         if budget is not None:
             rs = [r for r in rs if r.round_index <= budget]
@@ -819,6 +830,7 @@ def floor_arm_is_complete(cs: Sequence[Cell], universe: Sequence[str],
 def summarise(rows: Sequence[RoundRecord], *, budget: int,
               pool_dir: pathlib.Path | None = None,
               universe: Sequence[str] = (),
+              control: Sequence[str] = (),
               force_freeze: bool = False) -> dict[str, Any]:
     """Everything `caster analyse` writes. Order matters: threats first.
 
@@ -827,8 +839,19 @@ def summarise(rows: Sequence[RoundRecord], *, budget: int,
     at every seed it ran. It is the denominator every band analysis uses,
     it never corrects itself once written, and an incomplete merge is not a
     reason to pick one. `--freeze-rates` forces it when an operator means to.
+
+    `control` is the unfiltered control arm's faults, and **every number below
+    excludes them**. The band tables already did, by testing membership of the
+    frozen pool — but `arms`, `decomposition`, `survival`, `repair_rates` and
+    `floor_arm_complete` did not, so a `caster evaluate --control` pass moved
+    the headline arm table. The whole point of that arm is that it is reported
+    "separately, whatever it shows": it gets its own key, and the main grid
+    stops being a function of whether it ran.
     """
-    cs = cells(rows, budget=budget)
+    declared = set(control)
+    everything = cells(rows, budget=budget)
+    cs = [c for c in everything if c.task not in declared]
+    control_cells = [c for c in everything if c.task in declared]
     pool_sizes = load_pool_sizes(pool_dir) if pool_dir else {}
     task_dates = load_task_dates(pool_dir) if pool_dir else {}
     frozen_rates = load_repair_rates(pool_dir) if pool_dir else {}
@@ -863,6 +886,15 @@ def summarise(rows: Sequence[RoundRecord], *, budget: int,
             p: km_survival(cs, p, budget)
             for p in sorted({c.policy for c in cs})
         },
+        # Reported APART, and pre-registered as "whatever it shows". These
+        # faults are the ones a pool-size threshold would have cut, so
+        # pooling them into `arms` above would put back exactly the
+        # correlation this arm exists to measure.
+        "control_arm": {
+            "tasks": sorted({c.task for c in control_cells}),
+            "cells": len(control_cells),
+            "arms": arm_table(control_cells),
+        } if control_cells else {},
     }
 
 

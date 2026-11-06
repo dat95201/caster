@@ -263,7 +263,7 @@ Either way the leakage figure is wrong and nothing looks broken.
 Every steered arm sets all three in its own overrides, so a grid-wide flag would
 lose to the arm on exactly the arms where it matters — a flag that is parsed,
 keyed and then discarded, which puts the *default* in the cell key while the
-command line says otherwise. `km+steer-k1`, `km+steer-k3`, `km+steer-sample`,
+command line says otherwise. `km+steer-k1`, `km+steer-k2`, `km+steer-sample`,
 `km+steer-noreq` and `km+steer+vs` are the mechanism. Add a row to the roster,
 not a flag.
 
@@ -705,3 +705,266 @@ remove the load dependence at the source, but it changes the instrument, so
 corpus-scale cost DECISIONS 2 and 25 both declined. The per-fault clock of
 DECISIONS 25, `max(SANDBOX_TIMEOUT_SEC, k * reference_cpu_s)`, remains the
 better fix and is still owed.
+
+---
+
+## 28. Phase 1 writes outside `shards/`, and the fleet knows which stage it runs
+
+**`caster propose` writes `data/<run>/propose/sNN/`, which
+`shard.inputs()` cannot match; `scripts/fleet.sh launch --stage propose` runs
+that verb instead of `evaluate --force-full-budget`.**
+`caster/run/shard.py::propose_dir`, `cli._walk`.
+
+Phase 1's rows are a by-product of filling the response cache and the patch
+store. They are **not** an arm's phase-2 result, and three things make them a
+different measurement:
+
+* it draws the full budget, where a phase-2 cell stops at the first accept;
+* it runs against a **cold verdict store** and a **live sandbox**, before
+  `caster audit` has measured anything, so a probe that times out under load
+  refutes a patch that every phase-2 arm later accepts from the store;
+* `no-mem` is both the phase-1 arm and a Block A arm.
+
+Sharing `shards/*/cells.done` therefore made resume call `no-mem` *already
+done* in phase 2 — the arm was never evaluated, its phase-1 rows were merged
+as if it had been, and `audit_soundness` reported `no-mem=False@None` against
+twelve arms at `True@1`. **That is Invariant 2 failing on an artefact of where
+the rows were written**, which is the worst possible way for a soundness
+check to fire: it points at the scheduler and the scheduler is innocent.
+
+The separation is by construction, the same mechanism Invariant 14 uses for
+smoke output, not a naming convention. `caster audit` reads both namespaces,
+because the patch sequence it scores is the one phase 1 drew. A
+`collection mode` audit warns when rows in one namespace *were* collected
+differently anyway (a hand-run driver, an old fleet script), so the cause is
+named instead of inferred.
+
+`tests/test_cli.py::test_phase_one_does_not_mark_phase_two_done`.
+
+## 29. A cache miss skips the cell, not the shard
+
+**`--on-cache-miss skip` is the default; `stop` restores the hard stop.**
+`caster/run/driver.py::walk`.
+
+`CacheMiss` is a build failure and must stay loud — that part of decision 2
+is unchanged. What was wrong was the blast radius. It left `run_episode`
+uncaught, the driver re-raised, `cli.main` returned 1, and the shard
+**process** died with its whole remaining range unwalked. One cell whose
+phase-1 draw hit `context_overflow`, or whose probe is stored as a
+quarantined `timeout` (`VerdictStore.get` never serves one), therefore cost
+every later task in that range across **every** arm: a pilot lost 49 tasks in
+all twelve of them to a handful of bad cells, and the loudness bought nothing
+because the operator still had to read the merge audit to find out.
+
+`skip` keeps every property that made the stop defensible and drops the
+collateral. The cell is **abandoned whole** — no rows, no done-index entry —
+so it re-walks the moment the gap is filled; the miss is appended to
+`shards/sNN/misses.jsonl`; the shard exits **3** with the list; and
+`fleet.sh wait` greps the summary out of the logs.
+
+## 30. The model is resolved before the key is built, and `key_version` is a hard stop
+
+**`cli._model` resolves `--model` / `$MODEL` once, for the cell key and the
+client alike. `KEY_VERSION` 3 → 4. `shard.PROTOCOL_FIELDS` carries
+`key_version`.**
+
+`--model` defaulted to `""` and `LLMClient` fell back to `$MODEL`, so every
+`CellSpec` was keyed `model=` while the patches were drawn by a named model.
+`model` **is** a `CellSpec` field, so the consequence is the one `keys.py`
+warns about in its own docstring: two models produce the identical
+`episode_id`, `needs_walk` calls the second grid already done and never walks
+it, and `collapse` — last write wins — keeps whichever row file is read
+first. A finished grid silently replaced by another model's, with an empty
+`model` column in the report as the only symptom.
+
+The meaning of every existing key therefore changed, which is what
+`KEY_VERSION` is bumped for. And the row does not carry the version — it
+carries the `CellSpec` fields, which are identical across versions — so v3
+and v4 rows differ only in `episode_id` and pooled silently. The driver's
+docstring already promised the merge refused that join; `PROTOCOL_FIELDS` now
+actually contains the field. `scripts/migrate_run.py` carries a frozen corpus
+into a fresh `RUN_DIR`; the three cross-run stores follow nothing, so the
+re-walk costs no model calls.
+
+## 31. With G6 off, the window is the config that has to be sized
+
+**`MAX_BUDGET` 16,000 → 32,000, one `output_ceiling()` rather than two
+constants, and `caster preflight` names the tasks that do not fit.**
+`caster/steer/template.py`, `caster/run/propose.py`, `cli._window_shortfall`.
+
+Decision 22 switched G6 (`--lines-max`) off with the right reason — "the real
+constraint is the output budget, not a line count" — and then left that
+constraint unmeasured. Slot S3 carries the whole current source and the reply
+carries a whole rewrite of it, so the **window** has to hold both, and the
+output ceiling has to hold one. Measured over ConDefects' 2,864 Python
+faults:
+
+| | |
+|---|---|
+| out-tokens needed, `ceil(len/3.5 × 1.15)` | median 152 · p95 1,298 · p99 5,871 · max 63,153 |
+| programs over the old 16,000 ceiling | 4 (0.14%) |
+| prompt + output fits a 32,768 window | 99.86% |
+| … a 65,536 window | 99.97% |
+
+So: 32,000 is the smallest round ceiling that stops `MAX_BUDGET` being the
+binding constraint on all but one fault, and 65,536 is the window that admits
+all but the same one (a 192 KB submission needing 127k, which no local 7B
+will serve). `propose.draw` carried a second, bare `16_000` beside the first
+— it clipped a reasoning model's k-candidate draw back to the chat ceiling
+and would not have moved when the chat ceiling did.
+
+`max_tokens` is deliberately **not** clipped to the served window: the window
+reaches no key (Invariant 13) and clipping would put it there, re-keying every
+cached call and making CRN a function of which machine drew. The window is
+raised instead, and the tasks no feasible window admits are named by
+`preflight` before a grid starts rather than discovered as `context_overflow`
+in round 1 of every seed — followed, in a replay-only phase 2, by a cache
+miss on draws that were never made.
+
+## 32. A declared control fault is not a foreign one, and never a main-grid cell
+
+**`merge_audit(control=...)` exempts the control arm from `FOREIGN`;
+`summarise(control=...)` excludes it from every main-grid number and reports
+it under its own key.**
+`caster/run/shard.py::audit_coverage`, `caster/report/analyse.py::summarise`.
+
+The control arm's faults are deliberately **not** in `pool_order` — decision
+19, and it is what stops a corpus-wide average picking them up. But
+`caster evaluate --control` writes them into the evidence namespace, and
+`FOREIGN` is fatal on any task outside the universe. So from the first
+control pass onward every `caster merge` ended "1 FATAL audit … Nothing was
+written", blaming *a shard cut from a different corpus*. The arm that exists
+to make the scope condition checkable could not be merged at all.
+
+The other half was quieter and would have outlived the first. `analyse`
+filtered control cells out of the **band** tables, by testing membership of
+the frozen pool — but `arms`, `decomposition`, `survival`, `repair_rates` and
+`floor_arm_complete` read every cell. Those faults are exactly the ones a
+pool-size threshold would have cut, so running the control arm moved the
+headline table in the direction the arm exists to measure. "Reported
+separately, whatever it shows" has to bind the main grid too, so the split is
+now structural: `summarise` partitions once, every table above reads the main
+half, and `control_arm` carries the rest into `summary.json` and the report.
+
+A third, smaller thing, found in the same pass and fixed where it is cheapest:
+the control arm samples faults rejected by a **threshold** gate (G3, G5, G6),
+and decision 22 turned all three off. `freeze --control-size 40` against
+default thresholds therefore has nothing to sample and draws **zero** —
+silently, until `evaluate --control` dies two stages later. `freeze` now says
+so, and names the threshold to re-impose.
+
+`tests/test_review_regressions.py::test_the_control_arm_does_not_brick_the_merge`,
+`::test_the_control_arm_does_not_move_the_headline_table`.
+
+## 33. `K` is corrected by overlap, and the correction is bounded to one deferral
+
+`K` is a **marginal** rejection rate. Under stop-at-first-rejection the quantity
+that decides cost is **conditional**: once probe `a` has PASSED on a candidate,
+any probe whose rejection set sits inside `a`'s is very unlikely to refute it,
+and a marginal `K` cannot see that because it reads how many candidates a probe
+refuted, never which ones. This is exactly the `RTP_total` / `RTP_add` split
+(Rothermel et al.), with the rejection set in place of code coverage. The
+outline cited `RTP_add` and then ranked on a total-family quantity.
+
+**The rule.** `CaseStat` keeps `rejected`, the set of patch shas this probe was
+seen to refute this episode. With `R(x)` that set and `P` the probes that have
+already run *and passed* on this candidate,
+
+    overlap(x | a) = |R(x) ∩ R(a)| / |R(x)|
+
+and `x` is moved to the back of **this round's** queue when `overlap(x|a) ≥
+overlap_thr` for some `a ∈ P`. `overlap_thr = 0.75`, `overlap_min_rej = 1`.
+
+**It defers, it never drops.** `caster.exec.verify.scan` walks the deferred
+probes after everything else, so an accepting round still runs the whole pool
+and Invariant 2 is untouched. A rule that skipped probes would change which
+candidates are accepted, which is a soundness bug, not a scheduling result.
+
+**A probe is deferred at most once per round.** Without the bound the walk is
+still finite — the queue shrinks every step — but a probe can be stepped over
+repeatedly as `P` grows, and a genuine refuter ends up arbitrarily far back.
+The bound is also the stronger rule, which is the part worth recording: on the
+pilot replay a deferral lasting the whole round is **−4.4% CPU, CI95 [−9.1,
++0.2]**, against **−6.3% [−13.5, −0.6]** for one deferral each. Safety and
+effect pointed the same way, which is not usually how it goes.
+
+**Why 0.75 and not ⅔.** Swept over the pilot the rule is flat across
+[0.667, 0.95] and falls off a cliff at 0.50. ⅔ sits at the edge of the plateau
+AND is a value the data takes exactly — 2 shared out of 3 — so float comparison
+decides the branch; one task moved 180 s → 740 s on that tie alone. 0.75 is the
+middle of the plateau and is not a small rational.
+
+**The evidence, not the rule, is the binding constraint.** A round records
+exactly ONE refuting probe, so two probes are seen refuting the same patch only
+when that patch recurs later and a different probe reaches it first — 33% of
+pilot episodes, usually one patch. On episode-local evidence the correction is
+**−0.12% CPU, CI95 [−1.6, +1.3]**, not distinguishable from zero. Seeded from
+the rejection sets `caster audit` has already computed for the task
+(`seed_overlap`), the same rule is **−6.3% [−13.5, −0.6]**. Shipping it on
+episode-local evidence is a bet on the seeded table, and `km-ov0` (`overlap_thr
+= 0`) exists so the clause is priced rather than assumed.
+
+**Not yet wired: the seeded arm.** `seed_overlap` is implemented and tested;
+nothing calls it. An arm that does needs the verdict store to enumerate a
+task's patches, and it must be reported BESIDE the main grid, never inside it —
+statistics learned on other episodes of the same task break the independence
+CRN pairs on, the same reason `seed_from` is barred from the grid.
+
+## 34. Hints are deduplicated by the same rule, and `k_facts` defaults to 3
+
+Two hints that refute the same candidates spend two prompt slots to say one
+thing: no second failure mode, no second constraint, just the first restated in
+different bytes, paid for in tokens and attention. `CaseLedger.evidence` now
+walks the ranking greedily and skips a candidate whose rejection set is already
+covered by one it has chosen, using the same `overlap` and the same threshold.
+
+The comparison is **symmetric** here and asymmetric in the scheduler, and the
+difference is not an oversight. In the scheduler one probe has already run and
+the question is whether the next still adds anything after it. In the selector
+neither hint has run and the question is whether the PAIR earns two slots, so a
+narrow hint inside a broad one is dropped whichever way round they rank.
+
+`k_facts` moves 2 → 3. Under deduplication, asking for three distinct hints
+renders about what two undeduplicated hints rendered before, with the third
+slot going to a genuinely different failure mode when one exists. Often none
+does: measured on the pilot, **55% of episodes end with fewer than two distinct
+proven refuters**, so `k` is a ceiling far more often than a count. Every
+record already carries `k_facts_rendered`, and the k-sweep must be read against
+that, not against the requested `k`. A sweep read against the request reports a
+comparison it did not run — which is the same failure `km-explore0` was kept to
+prevent, arriving by a different road.
+
+`docs/QUESTIONS.md` RQ4's arms change from `{1,3}` against a default of 2 to
+`{1,2}` against a default of 3.
+
+**Unverified claim found while measuring this.** `caster/exec/ledger.py` states
+"measured saturation is 2.57 distinct refuters per episode". On the pilot
+corpus it is **1.67**, with 55% of episodes below 2. The 2.57 is presumably
+from the earlier 7-task full-pool runs. RQ4's design rests on that number and
+it should be re-derived on the frozen corpus before the main run.
+
+## 35. `KEY_VERSION` is 5
+
+`overlap_thr` and `overlap_min_rej` joined `CellSpec` and `k_facts` changed
+default, all three of which change what a cell IS. Every cell is re-keyed at
+once rather than letting an unwritten field read as a default in an analysis
+(the reason the key is versioned at all). **Every pilot record is on v4 and
+does not pool with anything produced from here on.**
+
+## 36. The hint sweep brackets 3 from below, and the default is on probation
+
+`_STEER` pinned `k_facts = 2` independently of the `CellSpec` default, so
+moving the default to 3 (DECISIONS 34) would have left every Block B arm at 2
+while the report said 3 — the code and the write-up disagreeing silently, which
+is the failure DECISIONS 26 exists to catch. `_STEER` is now 3, and the sweep's
+rungs are `km+steer-k1` and `km+steer-k2` against a default of 3, replacing
+`km+steer-k3`.
+
+**The default moved on an argument, not a measurement, and that is on the
+record.** Deduplication frees a slot, so three REQUESTED facts render about
+what two undeduplicated facts rendered. But k=3 was *measured worse* on RQ4's
+own metric: **16.8% hint leakage against k=2's 7.0%**. Whether dropping
+near-duplicates pulls that back is exactly what `km+steer-k2` vs `km+steer` now
+has to answer. If it does not, the default is wrong and reverts to 2. Nothing
+here should be read as "k=3 is better"; it is "k=3 is now the thing being
+tested", and the arm that would refute it is in the grid.

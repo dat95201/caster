@@ -185,6 +185,21 @@ def scan(
     patch_sha = _sha(patch)
     ran: list[str] = []
     skipped: list[str] = []
+    # The round's queue, in the policy's order. The overlap rule reorders
+    # WITHIN it and never removes from it, so nothing is dropped and an
+    # accepting round still runs the whole pool — ordering cannot change
+    # acceptance (Invariant 2). `scan_order` below records the walk that
+    # actually happened, deferrals and all, so a deferral is visible in the
+    # record rather than inferred from a cost that moved.
+    pending: list[str] = list(order)
+    passed: list[str] = []
+    #: A probe may be pushed back AT MOST ONCE per round. Without this the
+    #: walk is still finite — `pending` shrinks every iteration — but it is
+    #: finite by an argument about the loop rather than by a rule, and a probe
+    #: could be stepped over many times while `passed` keeps growing. One
+    #: deferral each makes the bound a property of the walk: at most one pass
+    #: of deferrals, every probe runs, and nothing starves.
+    deferred_once: set[str] = set()
     verdicts: dict[str, str] = {}
     observations: dict[str, ProbeVerdict] = {}
     cpu_total = 0.0
@@ -193,7 +208,32 @@ def scan(
     hits = 0
     killed_by: str | None = None
 
-    for probe in order:
+    # The rule is off for a full scan (nothing to save when every probe runs
+    # anyway, and `full-suite` must stay byte-identical) and off without a
+    # ledger (an audit is not an episode and has no rejection sets).
+    defer_on = (ledger is not None and not full and ledger.overlap_thr > 0.0)
+
+    while pending:
+        probe = None
+        if defer_on and passed:
+            for i, cand in enumerate(pending):
+                if cand in deferred_once:
+                    # Already spent its deferral. It is behind the probes that
+                    # have not, and it runs as soon as they are gone.
+                    continue
+                if ledger.redundant(cand, passed):          # type: ignore[union-attr]
+                    deferred_once.add(cand)
+                    continue
+                probe = pending.pop(i)
+                break
+        if probe is None:
+            # Either the rule is off, or nothing is left that has not already
+            # been pushed back once. Take the head: among probes that have all
+            # spent their deferral the policy's own ranking decides again, and
+            # a probe deferred earlier in this round is now AHEAD of whatever
+            # was deferred after it. One deferral each, then the walk finishes.
+            probe = pending.pop(0)
+
         # A probe is never run twice against one patch in one round. One walk
         # cannot overlap with itself unless a policy hands back a duplicate, and
         # a policy that does is a bug worth catching here rather than in a CPU
@@ -274,8 +314,10 @@ def scan(
         cpu_total += verdict.cpu_s
         if ledger is not None:
             ledger.update(probe, refuted=verdict.refuted, cpu_s=verdict.cpu_s,
-                          round_index=round_index)
+                          round_index=round_index, patch=patch_sha)
             ledger.scan_runs += verdict.runs
+        if not verdict.refuted:
+            passed.append(probe)
 
         if verdict.refuted and killed_by is None:
             killed_by = probe
