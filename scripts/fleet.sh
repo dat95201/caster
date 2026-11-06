@@ -71,7 +71,16 @@ usage() {
   sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
   cat <<'USAGE'
 
-  launch  --shards N [--stage propose|evaluate] [--from A --to B] [--stagger S] [-- ...]
+  launch  --shards N [--stage propose|evaluate] [--shard-base B]
+          [--from A --to B] [--stagger S] [-- ...]
+      --shard-base  offset for the shard INDEX, default 0. Shards write to
+                    data/<run>/shards/sNN, so two machines launching into one
+                    Drive-backed run directory with the default both write
+                    s00 — same rounds.jsonl, same cells.done, same meta.json,
+                    and `meta_conflict` cannot see it because the protocol is
+                    identical. Give the second machine `--shard-base 10` and
+                    the two never touch the same directory; `merge` globs
+                    `shards/*` and picks both up.
 
       --stage       which verb the shards run. `evaluate` (phase 2) is the
                     default. `propose` is PHASE 1 and it is not the same stage
@@ -115,11 +124,12 @@ universe_size() {
 }
 
 cmd_launch() {
-  local shards=0 from=0 to=0 stagger="$STAGGER" stage="evaluate"
+  local shards=0 from=0 to=0 stagger="$STAGGER" stage="evaluate" base=0
   local -a forward=()
   while (($#)); do
     case "$1" in
       --stage)  stage="$2";  shift 2 ;;
+      --shard-base) base="$2"; shift 2 ;;
       --shards) shards="$2"; shift 2 ;;
       --from)   from="$2";   shift 2 ;;
       --to)     to="$2";     shift 2 ;;
@@ -194,7 +204,7 @@ for lo, hi in plan_ranges($from, $to, $shards):
   local i=0
   for r in "${ranges[@]}"; do
     read -r lo hi <<<"$r"
-    local log="$FLEET_ROOT/shard-$(printf '%02d' "$i").log"
+    local log="$FLEET_ROOT/shard-$(printf '%02d' "$((base + i))").log"
     local rc="$log.rc"
     : >"$log"
     rm -f "$rc"
@@ -207,7 +217,7 @@ for lo, hi in plan_ranges($from, $to, $shards):
     # success.
     # shellcheck disable=SC2086
     nohup bash -c '"$@" >>"'"$log"'" 2>&1; printf "%s" "$?" > "'"$rc"'"' \
-          _ $CASTER "$stage" --shard "$i" --first "$lo" --last "$hi" \
+          _ $CASTER "$stage" --shard "$((base + i))" --first "$lo" --last "$hi" \
           "${forward[@]}" >/dev/null 2>&1 &
     local pid=$!
     entries+=("$(python3 -c "
