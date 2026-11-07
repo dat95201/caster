@@ -40,20 +40,22 @@ A probe may be pushed back **at most once per round**. The walk is finite
 either way — the queue shrinks every step — but one deferral each makes the
 bound a rule rather than an argument about a loop, and it measures better:
 replayed over the pilot, a deferral that lasts the whole round is worth −4.4%
-CPU, CI95 [−9.1, +0.2], against −6.3% [−13.5, −0.6] for one deferral each.
+CPU, CI95 [−9.1, +0.2], against −6.6% [−12.6, −1.4] for one deferral each.
 Letting a probe be stepped over repeatedly pushes a genuine refuter too far
 back, and the cost of that outweighs what the extra suppression saves.
 
-Replayed over the pilot's full kill matrix the correction is worth
-**−6.3% CPU, CI95 [−13.5, −0.6]**, when `R` is seeded from a table the audit
-has already produced (`seed_overlap`) — and **−0.12%, CI95 [−1.6, +1.3]**, on
-episode-local evidence alone, which is not distinguishable from zero. The rule
+**Pilot v1 measured this clause at exactly zero on episode-local evidence**
+(DECISIONS 39). Holding the exploration RNG fixed and toggling only the clause
+over 296 episodes and 3,556 rounds, it fires **0 deferrals** and moves CPU by
+**0.0%**. Seeded from the audit's kill matrix via `seed_overlap` the same rule
+fires 2,971 deferrals and is worth **−6.6% CPU, CI95 [−12.6, −1.4]**. The rule
 is cheap; the evidence is not, and that gap is the whole engineering question.
-Under fail-fast a round records exactly ONE refuting probe, so two probes are
-seen refuting the same patch only when that patch recurs in a later round and a
-different probe reaches it first — 33% of pilot episodes, usually one patch.
-Shipping the rule on episode-local evidence is therefore a bet on the seeded
-table, not a measured win on its own.
+Under fail-fast a round records exactly ONE refuting probe, so a probe that
+PASSES this round carries a rejection of its own in only 7.7% of rounds, while
+in the audit matrix a median 87% of probe pairs are ≥75% subsumed. Shipping the
+rule is therefore a bet on a cheaply-built seeded table, not a measured win on
+its own. `report/scripts/coverage_check.py` is the measurement; do NOT quote
+the grid pair `km` vs `km-ov0`, whose exploration seeds differ.
 
 Four properties the implementation must preserve, each with what it cost:
 

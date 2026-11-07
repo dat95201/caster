@@ -2,45 +2,45 @@
 \addcontentsline{toc}{chapter}{Abstract}
 \markboth{Abstract}{Abstract}
 
-A program repair tool built on a large language model (LLM) works in a loop. It
-asks the model for a patch, runs the program's tests to see whether the patch is
-wrong, and, if it is, feeds the failure back to the model and asks again. The
-loop repeats until a patch passes every test or until the attempt budget runs
-out.
-
-Two things make this loop expensive. First, running the tests is the step that
-is repeated most often and costs the most: every candidate patch must be built
-and executed before anyone can tell whether it works. Second, the model keeps
-proposing patches it has already tried, and each repeat still has to be tested.
-Both problems have the same cause. The loop produces useful information on every
-iteration --- which test rejected which patch, how long that test took, and which
-repair ideas have already failed --- and then throws almost all of it away.
+A program repair tool built on a large language model (LLM) works in a loop:
+it asks the model for a patch, runs the tests to see whether the patch is
+wrong, and if it is, feeds the failure back and asks again, until a patch
+passes or the budget runs out. Two things make that loop expensive: running
+the tests is the step repeated most often and costing the most, and the model
+keeps proposing patches it has already tried, each still to be tested. Both have the same cause --- the loop produces
+useful information on every iteration (which test rejected which patch, how
+long that test took, which repair ideas have already failed) and then throws
+almost all of it away.
 
 This report describes \caster, a repair loop that keeps that information in a
-small per-test record and spends it in two ways. \textbf{Cost-aware validation
-scheduling} combines how often a test has rejected patches with how long that
-test takes to run, and uses the combination to decide which test to run first,
-so a bad patch is rejected as cheaply as possible. \textbf{Selected hints}
-replace the usual practice of pasting the whole conversation history into the
-prompt with a small, freshly chosen set of concrete facts that point the model
-away from ideas already shown to fail. The two mechanisms feed each other: the
-scheduler produces the failure information the hints are selected from, and
-better hints mean fewer wasted patches arriving at the expensive validation
-step.
+small per-test record and spends it twice. \textbf{Cost-aware validation
+scheduling} combines how often a test has rejected patches with how long it
+takes to run, and picks the first test to run from the combination, so a bad
+patch is rejected as cheaply as possible. \textbf{Selected hints} replace
+the usual practice of pasting the whole conversation history into the prompt
+with a small, freshly chosen set of concrete facts pointing the model away
+from ideas already shown to fail. The two feed each other: the scheduler
+produces the failure information the hints are selected from, and better hints
+mean fewer wasted patches reaching validation. The whole mechanism is three
+numbers per test case, updated in constant time, with nothing trained and no
+extra test run or model call.
 
-Because \caster\ works only at the level of \emph{which test runs first} and
-\emph{what goes into the prompt}, it is compatible with the two other families
-of cost reduction in the literature: systems that make each test execution
-faster, and learned verifiers that skip execution for some candidates
-altogether.
+\paragraph{What was measured.} The scheduling half was evaluated on a pilot of
+$97$ Python tasks from ConDefects~\citep{wu2024condefects}, three seeds each,
+a budget of twenty rounds. Against the test order the benchmark ships, the
+scheduler removed $\mathbf{60.8\,\%}$ of validation CPU (95\,\% interval
+$[-73.3, -36.3]$) while repairing exactly the same bugs on exactly the same
+rounds. An ablation shows nearly all of that comes from keeping any memory at
+all: the published baseline \frtp~\citep{qi2013frtp}, ranking tests by a plain
+count of past rejections, reaches $-59.7\,\%$ on its own. The cost term adds
+a further $2.9\,\%$ over \frtp\ ($[-11.0, +4.9]$), a whole-session figure
+that averages two opposite regimes: a rejection count is informative after one
+observation, a cost estimate is a mean, so the scheduler is $2.1\,\%$
+\emph{more} expensive over rounds $1$--$5$ and $10.6\,\%$ cheaper over rounds
+$11$--$15$, with the gap still widening when the budget ends. The win
+concentrates in the third of tasks whose tests genuinely differ in cost, and
+is visible only because the study reports seconds: in test executions the
+comparison reverses sign.
 
-\paragraph{Status of the evaluation.} The system is implemented and unit-tested.
-The evaluation reported here is a pilot on $100$ Python tasks from
-ConDefects~\citep{wu2024condefects}, a benchmark built so that its faults
-post-date the training cut-off of commonly used models. The pilot compares
-\caster\ against the order the benchmark ships, an uninformed random order, and
-the published fault-recorded prioritiser \frtp~\citep{qi2013frtp}, measuring CPU
-seconds as the primary cost unit and test executions alongside it.
-Chapter~\ref{ch:results} is laid out for those results and every number in it is
-marked as pending until the pilot finishes. No number in this report is
-presented as a final result at corpus scale.
+The generation half is implemented and unit-tested but not yet run, and no
+number here is a corpus-scale result.

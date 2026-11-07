@@ -18,38 +18,9 @@ then \emph{validated} by running the test suite against it. If validation fails,
 the resulting feedback --- the failing test cases, the error message, or the
 stack trace --- is fed back to the model so that it can refine the patch, and
 the loop repeats. It stops when a patch passes all tests, which makes it
-\emph{plausible}, or when the iteration budget is exhausted.
-Figure~\ref{fig:apr-loop} shows the arrangement.
-
-\begin{figure}[htbp]
-\centering
-\resizebox{\textwidth}{!}{%
-\begin{tikzpicture}[
-  node distance=10mm and 14mm,
-  box/.style={draw=bkblue,fill=bkblue!6,rounded corners=2pt,align=center,
-              inner sep=6pt,font=\small,minimum height=12mm,text width=27mm},
-  small/.style={font=\scriptsize,align=center},
-  arr/.style={-{Stealth[length=2.4mm]},draw=black!70,thick}
-]
-\node[box] (bug) {Buggy program\\ + test suite};
-\node[box,right=of bug] (gen) {\textbf{Generate}\\ LLM proposes\\ a patch};
-\node[box,right=of gen] (val) {\textbf{Validate}\\ run the tests\\ on the patch};
-\node[box,right=of val] (done) {Plausible patch\\ (all tests pass)};
-
-\draw[arr] (bug) -- (gen);
-\draw[arr] (gen) -- (val);
-\draw[arr] (val) -- node[small,above]{pass} (done);
-
-\coordinate (below) at ($(val.south)+(0,-11mm)$);
-\draw[arr] (val.south) -- (below)
-      -- node[small,below]{\textbf{Refine:} failing test, error message, stack trace}
-      ($(gen.south)+(0,-11mm)$) -- (gen.south);
-\end{tikzpicture}}
-\caption{The iterative generate--validate--refine loop used by most LLM-based
-repair systems. Validation is the step inside the cycle, so its cost is paid
-once per candidate patch rather than once per bug.}
-\label{fig:apr-loop}
-\end{figure}
+\emph{plausible}, or when the iteration budget is exhausted. Validation sits
+\emph{inside} the cycle, so its cost is paid once per candidate patch rather
+than once per bug --- which is the whole reason it dominates.
 
 \section{Two Problems with Current Practice}
 \label{sec:intro-problems}
@@ -165,20 +136,41 @@ transcript (Section~\ref{sec:hints}).
 \item \textbf{A mechanism cheap enough to adopt.} Both mechanisms run on one
 record of three numbers per test case, updated in constant time
 (Section~\ref{sec:method-cost}). Nothing is trained, no profiling pass is
-needed, and neither mechanism adds a single program execution or model call ---
-the scheduler reorders runs the loop was already making, and hint selection
-only reads what validation has already recorded. This matters for comparison as
-well as for deployment: the other two families of validation-cost reduction
-require a language-runtime integration or a trained verifier before they return
-anything (Section~\ref{sec:disc-adoption}).
+needed, and neither adds a program execution or a model call --- the scheduler
+reorders runs the loop was already making, and hint selection only reads what
+validation has already recorded. This matters for comparison as well as
+deployment: the other two families of validation-cost reduction each require a
+language-runtime integration or a trained verifier before they return anything
+(Section~\ref{sec:disc-combining}).
 
 \item \textbf{An evaluation protocol that reports the resource actually spent.}
 CPU seconds as the primary unit with test executions reported alongside, paired
 per task, with interval estimates from a bootstrap over tasks
-(Chapter~\ref{ch:experiments}). The two units can disagree, and a result
-reported in executions alone does not transfer to a deployment that pays for
-time.
+(Chapter~\ref{ch:experiments}). The two units can disagree, and on this pilot
+they did: against the published baseline the proposed scheduler runs $13\,\%$
+more test executions and spends $3\,\%$ less CPU, so a result reported in
+executions alone would have reversed the conclusion.
 \end{enumerate}
+
+\section{What the Pilot Found}
+\label{sec:intro-findings}
+
+The scheduling half has been measured on a pilot of $97$ ConDefects Python
+tasks; the generation half has not been run. Two results are worth stating up
+front, because the second is narrower than the contributions above might
+suggest.
+
+Against the test order the benchmark ships, the proposed scheduler removes
+$60.8\,\%$ of validation CPU and repairs exactly the same bugs on exactly the
+same rounds. But \textbf{almost all of that comes from keeping any memory at
+all}: \frtp, published in $2013$ and ranking on a plain count of past
+rejections, reaches $59.7\,\%$ on its own. The cost term adds a further
+$2.9\,\%$ with an interval that includes zero --- although that whole-session
+figure averages two opposite regimes, since a cost estimate needs more
+observations than a rejection count does: the scheduler is $2.1\,\%$ more
+expensive over the first five rounds and $10.6\,\%$ cheaper over rounds
+$11$--$15$, and the gap is still widening when the budget ends.
+
 
 \section{Structure of This Report}
 \label{sec:intro-structure}
@@ -187,7 +179,9 @@ Chapter~\ref{ch:related} surveys related work in three groups: reducing patch
 validation cost, steering generation, and context selection.
 Chapter~\ref{ch:background} builds the necessary background from first
 principles. Chapter~\ref{ch:method} describes \caster.
-Chapter~\ref{ch:experiments} states the research questions and the protocol for
-the $100$-task pilot, and Chapter~\ref{ch:results} reports the results.
+Chapter~\ref{ch:experiments} states the four research questions and the
+protocol for the pilot, and Chapter~\ref{ch:results} reports the measured
+results for the scheduler and the layout of the generation-side tables that
+have not been run.
 Chapters~\ref{ch:discussion}--\ref{ch:conclusion} discuss when the approach
 does and does not help, state the threats to validity, and conclude.

@@ -3,25 +3,13 @@
 
 \section{Internal Validity}
 
-\paragraph{Parameters are selected on the pilot.} The cost exponent $c$, the
-hint count $k$, the exploration rate $\varepsilon$ and the cold-start rule are
-all chosen by sweeps on the same $100$ tasks the results are reported on, and a
-value selected on the data it is reported on is optimistically biased. The
-mitigation is procedural rather than statistical: all four are declared before
-the corpus run, and the sweeps are then reported as sensitivity checks against
-the declared values (Section~\ref{sec:future}).
-
-\paragraph{The history store depends on the patches the model happens to
-produce.} Policy and data are coupled within a session: a schedule influences
-which tests are run, which influences what the store contains, which influences
-the next schedule. Two things limit the damage. Round~$1$ is identical across
-configurations under common random numbers, so no configuration starts from an
-advantage; and the per-test cost table is established by a dedicated full-scan
-audit before any configuration runs, so no configuration's ordering can
-contaminate the costs every configuration is scored against. The combined
-\code{sched+hints} configuration has the same issue by design --- both
-mechanisms read one store --- which is why the $2\times2$ design of
-Table~\ref{tab:factorial} also runs each mechanism alone.
+\paragraph{The policy influences the data it then learns from.} Within a
+session the schedule decides which tests run, which decides what the store
+contains, which decides the next schedule. Two things limit the damage.
+Round~$1$ is identical across configurations under common random numbers, so
+none starts from an advantage; and the per-test cost table is established by a
+dedicated full-scan audit before any configuration runs, so no configuration's
+ordering can contaminate the costs every configuration is scored against.
 
 \paragraph{Instrument faults that produce numbers rather than errors.} Three
 failure modes would yield plausible wrong values instead of a crash: a
@@ -30,75 +18,102 @@ with a fresh one, and a timeout entered into the cost model at the clock value.
 Each is instrumented --- an accounting identity checked per scan, a halt on
 disagreement, and quarantine of timeouts --- rather than asserted in prose.
 
+\paragraph{Two tasks were dropped after the run.} The merge audit refused two
+of the $99$ tasks that produced sessions, because the audit pass had not
+recorded an outcome for every (patch, test) pair they needed. They are dropped
+from every configuration rather than some, so the comparison stays paired ---
+but the admitted set and the analysed set are not the same $100$ tasks.
+
 \section{External Validity}
 
 \paragraph{One benchmark, one language.} All results come from the Python
 subset of ConDefects: single-file competitive-programming submissions with
 whole-program, stdout-compared tests. Two consequences follow. Test
-\emph{selection} is unavailable here, so prioritisation is the only scheduling
+\emph{selection} is unavailable, so prioritisation is the only scheduling
 lever, whereas in project-scale Java repair selection is available and has been
 found to dominate~\citep{lou2024aprregression}. And contest pools are
-deliberately heterogeneous in cost, which is favourable to the cost term; an
-interpreted language exaggerates that spread further. A uniform-cost corpus
-would show less, which is the regime Section~\ref{sec:disc-limits} identifies
-as C2.
+deliberately heterogeneous in cost, which is favourable to the cost term --- an
+interpreted language exaggerates the spread further. A uniform-cost corpus
+would show less, which is condition C2 of Section~\ref{sec:disc-limits}.
 
 \paragraph{One proposer model, at pilot scale.} Every candidate comes from
-\code{qwen2.5-\hspace{0pt}coder:\hspace{0pt}7b} at a single temperature, so the rejection structure the
-store learns is one model's: which tests are discriminating depends on which
-mistakes the model makes. Whether that structure transfers across models is an
-open question and a planned follow-up (Section~\ref{sec:future}). The budget of
-twenty rounds also truncates the learning curve --- the cost estimates are still
-improving when a session ends --- so a longer budget could show a larger or a
-smaller effect, and the pilot cannot say which.
+\code{qwen2.5-\hspace{0pt}coder:\hspace{0pt}7b} at one temperature, so the
+rejection structure the store learns is one model's: which tests are
+discriminating depends on which mistakes the model makes. The budget of twenty
+rounds also truncates the learning curve, and
+Section~\ref{sec:res-crossover} shows that it truncates it at the worst
+possible place: \code{sched} only overtakes \code{frtp} at round $10$ and the
+gap between them is still widening when the budget ends. A longer budget would
+very likely show a larger effect, but the pilot cannot say how much larger,
+and the direction of that bias should be read as working \emph{against} the
+reported $-2.9\,\%$ rather than for it.
+
+\paragraph{The $100$ tasks are a draw, not a random sample.} They were taken
+from a corpus of roughly $1{,}244$ faults by the pool order fixed at freeze
+time. Nothing in the analysis corrects for that, and the full-corpus run is the
+only thing that removes it.
 
 \section{Construct Validity}
+
+\paragraph{The per-test cost table in the analysis is reconstructed.} The
+report's corpus statistics (Table~\ref{tab:res-arena}) recover each test's
+frozen cost by least squares from the replayed rounds, because a round's CPU is
+the sum of the costs of the tests it ran. This is exact where a test appears in
+enough rounds and noisy where it appears in few. It affects the descriptive
+statistics and the cost-spread split of Table~\ref{tab:res-cv}; it does not
+affect any head-to-head total, which is summed from the rounds themselves.
 
 \paragraph{``Duplicate'' is defined by normalised text.} Two candidates that
 differ in a variable name but express the same repair hypothesis are not
 duplicates under this definition, although they are equally wasteful. The
-measured duplicate rate is therefore a \emph{lower bound} on redundancy, and a
-reduction in it is a conservative estimate. The same caveat applies to the
-$65\,\%$ figure reported for \textsc{ChatRepair}~\citep{chen2025conversational},
-which this work uses as its reference point.
+duplicate rate is therefore a \emph{lower bound} on redundancy. The same caveat
+applies to the $65\,\%$ figure reported for
+\textsc{ChatRepair}~\citep{chen2025conversational}, which this work uses as its
+reference point.
 
 \paragraph{Cost is CPU; acceptance is plausibility.} A deployment paying for
 wall clock on a loaded machine, or for a test service priced per invocation,
 would prefer a different schedule from one paying for CPU --- and the units can
-disagree (Section~\ref{sec:disc-units}), which is why both CPU and executions
-are reported for every configuration. Separately, a candidate surviving the
-whole pool is \emph{accepted}, and the pool is finite: passing a finite suite
-is weaker than being correct~\citep{qi2015plausibility}, so \code{success@B} is
-a plausibility rate. That does not affect the cost claims, which hold the
-acceptance criterion fixed across configurations, but it bounds what the
-repair-rate numbers mean.
+disagree by more than the effect being measured
+(Section~\ref{sec:disc-units}), which is why both are reported for every
+configuration. Separately, a candidate surviving the whole pool is
+\emph{accepted}, and the pool is finite: passing a finite suite is weaker than
+being correct~\citep{qi2015plausibility}. That does not affect the cost claims,
+which hold the acceptance criterion fixed across configurations, but it bounds
+what the repair-rate numbers mean.
 
 \paragraph{The sandbox clock shapes the corpus silently.} A wall-clock kill is
 applied to the reference program first, so a test the correct program cannot
 finish leaves the pool, and a task whose pool empties leaves the corpus. This
-keeps the oracle sound --- no correct patch is rejected by a test the reference
-also fails --- but it removes faults non-randomly, from the expensive end. The
-admission funnel (Table~\ref{tab:res-funnel}) counts how many go this way, so
-the bias is visible rather than silent.
+keeps the oracle sound, but it removes faults non-randomly, from the expensive
+end --- the end where the cost term would matter most.
 
 \section{Conclusion Validity}
 
-\paragraph{Sample size and skew.} One hundred tasks with three seeds is small
+\paragraph{Sample size and skew.} Ninety-seven tasks with three seeds is small
 for an effect whose per-task distribution is heavily right-skewed and dominated
-by a few expensive tasks. Mean-based tests would be driven by those tasks, so
-comparisons use the Wilcoxon signed-rank test on per-task totals; intervals are
-reported for every contrast, no point estimate appears without one, and every
-aggregate is reported alongside the number of tasks going each way.
+by a few expensive tasks: the top third by cost spread carries $79\,\%$ of the
+corpus's validation CPU. Comparisons therefore use the Wilcoxon signed-rank
+test on per-task totals rather than a mean-based test, every point estimate is
+reported with an interval, and the contrast where the aggregate and the
+per-task counts disagree is reported both ways
+(Table~\ref{tab:res-frtp-split}).
 
-\paragraph{Clustering.} The three seeds on one task share the task, the pool
+\paragraph{Clustering.} The three seeds of one task share the task, the pool
 and the cost structure, so treating them as independent would understate every
-interval by roughly $\sqrt{3}$. Intervals therefore come from a cluster
-bootstrap that resamples whole tasks.
+interval by roughly $\sqrt{3}$. Intervals come from a cluster bootstrap that
+resamples whole tasks.
 
-\paragraph{Multiple comparisons.} The experiment produces many contrasts: five
-configurations in RQ1, four in RQ2, a four-cell factorial, a five-step ablation
-ladder, two sweeps and a sensitivity table. Testing all at one threshold would
-make a spurious result close to certain, so four primary contrasts are declared
-in advance and carry a Holm correction (Section~\ref{sec:exp-stats}). Everything
-else is labelled exploratory, and no conclusion rests on a single exploratory
-row.
+\paragraph{Multiple comparisons.} Four contrasts are declared in advance and
+carry a Holm correction. The ablation ladder, the cost-spread split and the
+coverage-check replay are reported with intervals and labelled exploratory, and
+no conclusion rests on one of them alone.
+
+\paragraph{A significant $p$ and an interval covering zero are not a
+contradiction.} For \code{sched} against \code{frtp} the Wilcoxon test is
+significant ($p = 0.026$ after correction) while the bootstrap interval on
+total CPU covers zero. They measure different things: the test asks which
+configuration is cheaper on a \emph{typical} task, and the answer is \frtp, on
+$45$ tasks against $18$; the interval asks about the \emph{total}, which
+\code{sched} wins because its few wins are large. Both are reported, because
+reporting either alone would be misleading.

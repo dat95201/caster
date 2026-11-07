@@ -2,8 +2,10 @@
 .env
 
 # Run output. `RUN_DIR` nests under these; the directories themselves stay.
-data/
-logs/
+# Anchored, or `report/data/` — which IS source, it holds the analysis output
+# the report prints and `verify_pilot_numbers.py` checks against — disappears.
+/data/
+/logs/
 
 # Cross-run stores. Big, machine-local, and regenerable — the response cache is
 # what makes a re-run free, so it is kept, but it is not source.

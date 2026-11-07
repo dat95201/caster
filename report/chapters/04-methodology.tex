@@ -17,12 +17,11 @@ decide which test to run first. The \textbf{hint selector} uses the first,
 together with how readable the test's input is, to decide which facts go into
 the next prompt.
 
-Figure~\ref{fig:pipeline} shows one round, and Table~\ref{tab:dataflow} gives
-the same path as a table of inputs and outputs.
+Figure~\ref{fig:pipeline} shows one round.
 
 \begin{figure}[htbp]
 \centering
-\resizebox{0.80\textwidth}{!}{%
+\resizebox{0.70\textwidth}{!}{%
 \begin{tikzpicture}[
   stage/.style={draw=bkblue,fill=bkblue!6,rounded corners=2pt,align=center,
                 inner sep=6pt,font=\small,minimum height=18mm,text width=32mm},
@@ -70,57 +69,28 @@ the two mechanisms are one system rather than two independent features.}
 \label{fig:pipeline}
 \end{figure}
 
-\begin{table}[htbp]
-\centering
-\caption{Per-round data flow.}
-\label{tab:dataflow}
-\small
-\begin{tabularx}{\textwidth}{@{}l l X l@{}}
-\toprule
-Stage & Input & What happens & Output\\
-\midrule
-1 & prompt, draw seed & one model call; parse out a candidate program &
-candidate $s_t$\\
-2 & store $(n,k,S)$ & score every test by Eq.~\eqref{eq:score}; freeze the
-resulting order & order $\sigma_t$\\
-3 & $s_t,\ \sigma_t$ & run $s_t$ on tests in that order; stop at the first
-rejection & rejecting test $x^\star$, $r_t$ runs, CPU spent\\
-4 & $x^\star$, store & select $k$ proven tests; render them as requirements &
-prompt for round $t{+}1$\\
-\bottomrule
-\end{tabularx}
-\end{table}
-
 \subsection{Requirements the Design Must Satisfy}
 
 Five rules are binding on the implementation, because breaking any of them
-produces a plausible-looking but wrong number rather than a visible error.
-
-\begin{description}[leftmargin=1.6cm,style=nextline,itemsep=3pt]
-\item[\textbf{R1}] The store holds $(n, k, S)$ per test case, and the test
-order is derived from it once per round.
-\item[\textbf{R2}] The order is \emph{frozen} for the duration of a round: no
-test is re-ranked once the scan has begun. Re-ranking mid-round would make the
-order depend on results from the same scan, which is not reproducible from the
-store alone.
-\item[\textbf{R3}] The scan stops at the first rejection. Only tests actually
-run update $n$ and $S$; only the rejecting test updates $k$.
-\item[\textbf{R4}] A candidate is accepted only after surviving every usable
-test, so acceptance is independent of the order
-(Definition~\ref{def:soundness}).
-\item[\textbf{R5}] A hint is rendered as a positive requirement over a concrete
-input/output pair, never as a named prohibition, and the prompt never names a
-test whose content it does not show.
-\end{description}
+produces a plausible-looking but wrong number rather than a visible error. The
+store holds $(n, k, S)$ per test case, and the order is derived from it
+\textbf{once per round} and then \textbf{frozen} --- re-ranking mid-round would
+make the order depend on results from the same scan, which is not reproducible
+from the store alone. The scan \textbf{stops at the first rejection}, so only
+tests actually run update $n$ and $S$, and only the rejecting test updates $k$.
+A candidate is accepted only after surviving \textbf{every} usable test, so
+acceptance is independent of the order (Definition~\ref{def:soundness}). And a
+hint is rendered as a \textbf{positive requirement} over a concrete
+input/output pair, never as a named prohibition; the prompt never names a test
+whose content it does not show.
 
 Two measurement rules accompany them. Cost is read as a
 \code{getrusage}\allowbreak\code{(RUSAGE\_CHILDREN)} delta --- CPU time, not
-wall-clock time ---
-because wall clock on a shared machine is contaminated by sibling processes and
-would make the learned cost estimate a function of machine load rather than of
-the test. And because \code{getrusage} accounting is per process, parallelism
-across configurations must be process-per-worker rather than threaded, or one
-worker's CPU is attributed to another.
+wall clock --- because wall clock on a shared machine is contaminated by
+sibling processes and would make the learned cost estimate a function of
+machine load rather than of the test. And because \code{getrusage} accounting
+is per process, parallelism must be process-per-worker rather than threaded,
+or one worker's CPU is attributed to another.
 
 \subsection{What the Mechanism Costs}
 \label{sec:method-cost}
@@ -131,35 +101,15 @@ because the answer is close to nothing: \textbf{three numbers per test case,
 updated in constant time, with nothing trained and nothing executed that the
 loop was not already going to execute.}
 
-\begin{table}[htbp]
-\centering
-\caption[What the mechanism costs to run]{The overhead \caster\ adds to a
-repair loop, per task. $|P|$ is the number of tests in the pool and $B$ the
-round budget.}
-\label{tab:overhead}
-\small
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.23\textwidth} l X@{}}
-\toprule
-Resource & Added cost & Note\\
-\midrule
-Memory            & $O(|P|)$ & Three numbers per test: $n$, $k$ and $S$.
-A pool of $40$ tests is a few hundred bytes\\
-Time per test run & $O(1)$ & Two increments and one addition\\
-Time per round    & $O(|P| \log |P|)$ & One sort. Built lazily and abandoned at
-the first rejection, so in practice far less\\
-Extra program executions & \textbf{none} & The scheduler reorders the runs the
-loop was already making; it never adds one\\
-Extra model calls & \textbf{none} & Hint selection reads the store. The prompt
-module cannot execute anything --- it does not import the validator\\
-Prompt growth over a session & \textbf{none} & At most $k$ hints in any round,
-not $O(B)$ transcript lines\\
-Training & \textbf{none} & There is no model to train and no corpus to collect.
-The statistics are of this task, in this session\\
-Offline profiling pass & \textbf{none} & Test costs are measured from the runs
-the loop pays for anyway\\
-\bottomrule
-\end{tabularx}
-\end{table}
+Per task, the store is $O(|P|)$ memory --- three numbers per test, a few
+hundred bytes for a pool of forty. An update is two increments and an
+addition; a round is one sort of at most $|P|$ items, built lazily and
+abandoned at the first rejection. There are \textbf{no} extra program
+executions (the scheduler reorders runs the loop was already making), \textbf{no}
+extra model calls (hint selection only reads the store), \textbf{no} growth of
+the prompt with session length (at most $k$ hints in any round, not $O(B)$
+transcript lines), \textbf{no} training and \textbf{no} offline profiling pass
+--- test costs are measured from the runs the loop pays for anyway.
 
 Two consequences follow. \textbf{The information is free}: the scheduler's
 inputs --- which test rejected which candidate, and how long that took --- are
@@ -210,24 +160,18 @@ $n(x)$ trials. Using the standard Beta conjugate prior, the posterior mean is
 K(x) \;=\; \frac{k(x) + \alpha}{n(x) + \alpha + \beta}.
 \label{eq:K}
 \end{equation}
-The prior matters more than it looks, so \textbf{both choices ship} and the
-prior is part of the configuration key rather than a constant.
+The prior is doing real work here, because at the start of a session every
+test has $n = 0$ and the prior is the \emph{only} thing ranking them.
 
-Jeffreys' invariant prior $\mathrm{Beta}(\tfrac12,\tfrac12)$
-\citep{jeffreys1946invariant} is the standard non-informative choice and is
-available as \code{--prior jeffreys}. It is \emph{not} the default, for a
-concrete reason: it places a test that has never been run at $K = 0.5$, which
-outranks a test with a real record of $k=2$ out of $n=10$, whose estimate is
-$0.227$. A policy that always prefers the unmeasured test to the proven one
-degenerates, under uniform costs, into running the whole pool --- so under
-Jeffreys the scheduler stops scheduling.
-
-The default is therefore $\mathrm{Beta}(\tfrac12, 2)$, written
-\code{--prior shipped}, whose mean is $0.2$: above the measured base rate on
-this corpus and comfortably below one half. Trying new tests is then the job of
-the exploration term below, not of a side effect of the prior, and the two are
-not interchangeable. Which prior is better is itself replayable at no cost from
-the full-scan kill matrix, so both are reported.
+The default is $\mathrm{Beta}(\tfrac12, 2)$, whose mean is $0.2$ --- above
+the measured base rate on this corpus and comfortably below one half. The
+obvious alternative, Jeffreys' $\mathrm{Beta}(\tfrac12,\tfrac12)$
+\citep{jeffreys1946invariant}, places a never-run test at $K = 0.5$, which
+outranks a test with a real record of $2$ rejections in $10$ runs ($0.227$). A
+rule that always prefers the unmeasured test to the proven one ends up running
+the whole pool, so under Jeffreys the scheduler stops scheduling. Trying new
+tests is the job of the exploration term below, not a side effect of the
+prior. Both priors ship, and the choice is part of the configuration key.
 
 \paragraph{The cost estimate.} The running mean cost of a test is
 $\hat{m}(x) = S(x)/n(x)$. A test that has never been run has no mean, and the
@@ -261,8 +205,7 @@ the whole pool.
 
 The scheduler ranks tests by
 \begin{equation}
-\mathrm{score}(x) \;=\; \frac{K(x)}{\hat{m}(x)^{\,c}},
-\qquad c \ge 0,
+\mathrm{score}(x) \;=\; \frac{K(x)}{\hat{m}(x)}
 \label{eq:score}
 \end{equation}
 and runs them in decreasing score until one of them rejects the candidate.
@@ -272,31 +215,28 @@ spending $\hat{m}(x)$ seconds ends the round; dividing one by the other gives
 expected rejections per CPU second, and greedily taking the best return first is
 the natural heuristic for the cost in Equation~\eqref{eq:cost}. Informally: run
 the test that is most likely to say ``no'' per second spent, not the test that
-is most likely to say ``no'' overall.
+is most likely to say ``no'' overall. This is full cost-cognizance in the sense
+of \citet{elbaum2001cost}, with the difference that $\hat{m}$ here is measured
+online from runs the loop was making anyway rather than supplied in advance.
 
-The exponent $c$ interpolates between two positions that already exist in the
-literature. At $c = 0$ the rule reduces to ranking on the rejection rate alone,
-which is the \frtp\ family's position with a denominator added. At $c = 1$ it is
-the plain ratio \km, full cost-cognizance in the sense of
-\citet{elbaum2001cost}. Intermediate values discount the cost term. Because
-$\hat{m}$ is a noisy online estimate built from few samples early in a session,
-dividing by the full cost can over-correct: one unusually cheap early
-measurement can pin a test at the top of the ranking. Values of $c$ below one
-are the standard way to use a noisy denominator, and $c$ is therefore treated as
-a declared parameter measured by a sweep (Section~\ref{sec:exp-config}) rather
-than as a constant fixed at $1$ by the name of the method.
+A natural generalisation is to raise the denominator to a power $c$, which at
+$c = 0$ recovers ranking on the rejection rate alone and at $c = 1$ recovers
+Equation~\eqref{eq:score}; values in between discount a cost estimate that is
+noisy early in a session. The implementation and every number in this report
+use $c = 1$. Tuning $c$ on the pilot and reporting the result on the same data
+would be a selected maximum, so the sweep belongs to the corpus run
+(Section~\ref{sec:future}), where the value can be declared in advance.
 
 \paragraph{Exploration.} With probability $\varepsilon = 0.15$, a position in
 the order is filled uniformly at random from the remaining tests instead of
-greedily. This is in the report rather than left as an implementation detail
-because it is load-bearing in two places. Without it, a task whose first test
-rejects every candidate reaches the end of the session having measured exactly
-one test: the cost estimate never fills in, so the scheduler has nothing to
-rank by, and the hint selector has one fact to choose from, which makes the
-hint-count sweep of Chapter~\ref{ch:experiments} compare $k{=}1$ against
-$k{=}1$. And because $\varepsilon$ changes measured numbers, it belongs in the
-configuration key, which means it has to be declared. A configuration with
-$\varepsilon = 0$ is run as a sensitivity check.
+greedily. It is in the report rather than left as an implementation detail
+because it is load-bearing. Without it, a task whose first test rejects every
+candidate reaches the end of the session having measured exactly one test: the
+cost estimate never fills in, so the scheduler has nothing to rank by and the
+hint selector has one fact to choose from. Because $\varepsilon$ changes measured numbers it is part of the
+configuration key. That has a cost worth recording: the random draws are
+seeded from that key, so two configurations differing in one flag also explore
+differently, which makes a single-flag ablation noisier than it needs to be.
 
 \subsection{Correcting a Marginal Rate}
 \label{sec:overlap}
@@ -308,181 +248,201 @@ decides cost is a \emph{conditional} one.
 Consider two tests that reject exactly the same candidates. Each has the same
 record, so each gets the same $K$, and both sit near the top of the order.
 Suppose the first of them runs and the candidate \emph{passes} it. The second
-test is now nearly worthless: everything it is known to reject has already been
+is now nearly worthless: everything it is known to reject has already been
 shown not to apply here. The marginal $K$ cannot see this, because it never
 looks at \emph{which} candidates a test rejected, only how many.
 
-This is the same distinction that separates the \emph{total} and
-\emph{additional} families in test prioritisation \citep{rothermel2001}. The
-additional family picks the test that adds the most to what previous tests
-already covered, rather than the test with the best standalone score, and it is
-the reason the additional variants outperform the total ones in that
-literature. The rule here is the same idea with a different notion of coverage:
-not lines of code, but the set of candidates a test is known to reject.
-
-Write $R(x)$ for the set of candidates test $x$ has been observed to reject so
-far in the session, and let $P$ be the tests that have already run \emph{and
-passed} on the current candidate. Define
+This is the distinction that separates the \emph{total} and \emph{additional}
+families in test prioritisation~\citep{rothermel2001prioritizing}, with a
+different notion of coverage: not lines of code, but the set of candidates a
+test is known to reject. Write $R(x)$ for the set of candidates test $x$ has
+been observed to reject so far in the session, and let $P$ be the tests that
+have already run \emph{and passed} on the current candidate. Define
 \begin{equation}
 \mathrm{overlap}(x \mid a) \;=\; \frac{\lvert R(x) \cap R(a)\rvert}{\lvert R(x)\rvert},
 \label{eq:overlap}
 \end{equation}
 and defer $x$ --- move it to the back of this round's order --- when
-$\mathrm{overlap}(x \mid a) \ge \tau$ for some $a \in P$. The default is
-$\tau = 0.75$.
+$\mathrm{overlap}(x \mid a) \ge \tau$ for some $a \in P$, with $\tau = 0.75$
+by default and at most one deferral per test per round.
 
-Three properties of this rule matter more than the rule itself.
+Two properties matter. It \textbf{defers and never drops}: a deferred test
+still runs, it runs last, so an accepting round still executes every test and
+Definition~\ref{def:soundness} is untouched. And \textbf{the order costs
+nothing to abandon}: it is built one position at a time from the store as it
+stood when the round began, and construction stops at the first rejection, so
+the unprobed tail is never materialised. Scheduling cannot change \emph{which}
+candidates are accepted, so the scheduling claim is a pure cost claim and a
+difference in repair rate between two schedules is a soundness bug rather than
+a result.
 
-\paragraph{It defers, it never drops.} A deferred test still runs; it runs
-last. An accepting round therefore still executes every test, so
-Definition~\ref{def:soundness} is untouched and scheduling remains a pure cost
-claim. A rule that skipped tests would be a different and unsound method.
-
-\paragraph{A test is deferred at most once per round.} Without that bound a
-test can be stepped over repeatedly as $P$ grows, which pushes a genuine
-rejecter arbitrarily far back. The bound is also the better rule when measured:
-on the pilot data, a deferral lasting the whole round is worth $-4.4\,\%$ CPU
-with a 95\,\% interval of $[-9.1, +0.2]$, against $-6.3\,\%$ with
-$[-13.5, -0.6]$ for one deferral per test. Bounding the correction makes it
-both safer and stronger.
-
-\paragraph{The rule is cheap; the evidence is not.} Equation~\eqref{eq:overlap}
-needs two tests to have been seen rejecting the same candidate. Under
-stop-at-first-rejection a round records exactly \emph{one} rejecting test, so
-that only happens when a candidate recurs in a later round and a different test
-reaches it first --- which occurred in $33\,\%$ of pilot sessions, usually for
-a single candidate. Measured on session-local evidence alone the correction is
-worth $-0.12\,\%$ CPU, interval $[-1.6, +1.3]$, which is not distinguishable
-from zero. Seeded instead from the rejection sets the audit pass has already
-computed for the same task, the same rule is worth $-6.3\,\%$, interval
-$[-13.5, -0.6]$. The configuration with $\tau = 0$ is run as a separate arm so
-that this clause is priced on its own rather than assumed.
-
-\paragraph{The order costs nothing to abandon.} It is built one position at a
-time from the store as it stood when the round began, and construction stops at
-the first rejection, so the unprobed tail is never materialised. Scheduling
-also cannot change \emph{which} candidates are accepted: by
-Definition~\ref{def:soundness} a candidate is accepted only after surviving
-every usable test, so every schedule accepts exactly the same ones. The
-scheduling claim is a pure cost claim, and a difference in repair rate between
-two schedules is a soundness bug rather than a result.
+Equation~\eqref{eq:overlap} is also what the hint selector uses to drop
+near-duplicate hints (Section~\ref{sec:hints}).
 
 \section{Selected Hints}
 \label{sec:hints}
 
+\subsection{The Prompt Is Assembled From Slots}
+
+The prompt is never built by string concatenation at a call site. It is
+assembled from eight numbered slots, so that a configuration changes which
+slots are filled rather than how a sentence is written, and two configurations
+can be compared byte for byte.
+
+\begin{table}[htbp]
+\centering
+\caption{The prompt slots. S1--S4 and S7 are identical in every configuration,
+which is what makes round~$1$ byte-identical across the grid; the hint
+mechanism is S5 and S6.}
+\label{tab:slots}
+\small
+\begin{tabularx}{\textwidth}{@{}l X l@{}}
+\toprule
+Slot & Contents & When\\
+\midrule
+S1 & Role and input/output contract & always\\
+S2--S3 & Program label and current source & always\\
+S4 & Worked examples, from the task's own public samples & when it has them\\
+\textbf{S5} & \textbf{The contract: $k$ selected requirements} & when the store holds $\ge 1$ proven test\\
+\textbf{S6} & \textbf{Progress line: a count and a pass/fail pattern} & with S5\\
+S7 & Output format & always, and always last\\
+S8 & Sampling instruction & one sensitivity arm only\\
+\bottomrule
+\end{tabularx}
+\end{table}
+
 \subsection{What a Hint Is}
 
-A hint is one test case, shown to the model as a requirement the next patch must
-satisfy:
+S5 opens with one header line and then lists the selected tests.
+Figure~\ref{fig:contract} is the block as the model receives it under the
+default disclosure.
 
-\begin{quote}\small\ttfamily
-On this input:\\
-\hspace*{1em}5 3\\
-\hspace*{1em}1 4 2 8 5\\
-your program must print exactly:\\
-\hspace*{1em}14\\
-(kills 43\,\% of attempts)
-\end{quote}
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.93\textwidth}
+\footnotesize
+\hrule\vspace{5pt}
+\begin{verbatim}
+Your patch must produce exactly this output on each of these inputs:
 
-Three properties of this form matter, and each is a rule in the implementation.
+  Input #1 - an estimated 43% of attempted fixes get this input wrong:
+    stdin: (verbatim, 2 lines)
+<<<
+5 3
+1 4 2 8 5
+>>>
+    required: (verbatim, 1 line)
+<<<
+14
+>>>
+    your last attempt printed `11`
 
-\paragraph{It is a requirement, not a prohibition.} The hint says what the patch
-must do, not what it must avoid. A prohibition (``stop using integer
-division'') removes one option and leaves the rest of the space unconstrained;
-worse, naming a failure mode in a prompt can make the model more likely to
-produce it. A requirement constrains the output directly and can be checked by
-the model as it writes.
+On the input above, your last attempt scored: fail.
+\end{verbatim}
+\vspace{-8pt}\hrule
+\end{minipage}
+\caption[The contract block, as the model receives it]{Slots S5 and S6 for one
+selected test, at the default disclosure. Everything here is a statement about
+what the patch must do or about what was observed; nothing names a behaviour
+to avoid, and nothing names the test itself.}
+\label{fig:contract}
+\end{figure}
+
+Four properties of this form matter, and each is a rule in the implementation.
+
+\paragraph{No instruction names a behaviour to avoid.} The hint says what the
+patch must do, never what it must not. This is sharper than ``prefer positive
+phrasing'': the failure mode is specifically an \emph{instruction together
+with a named target}. On the frozen log, a failure class the model would
+otherwise emit $5.4\,\%$ of the time was emitted $14.7\,\%$ of the time once
+the prompt named it --- a $2.7\times$ priming inversion --- while the
+instruction cut class repetition only from $82.1\,\%$ to $70.9\,\%$ and grew
+the prompt from $462$ to $1{,}263$ tokens. A \emph{description} is not an
+instruction, which is why \code{your last attempt printed \`{}11\`{}} is
+allowed: it states an observation and names no class. Format constraints in S7
+(``nothing else'', ``no prose'') stay, because they are identical in every
+configuration and changing them would break round-$1$ identity.
 
 \paragraph{Only proven tests are shown.} A test whose estimate comes entirely
-from the prior, with no actual record, is a guess, and a wrong guess spends
-tokens to point the model in a direction nothing supports. A test must have
-rejected at least one candidate in this session before it can appear as a hint.
+from the prior is a guess, and by the mechanism above a wrong guess does not
+merely waste tokens, it primes. A test must have rejected at least one
+candidate this session before it can appear.
 
-\paragraph{The number shown is the posterior rate, and it is worth being
-explicit about where it comes from.} The figure in the last line is
-$K(x)$ of Equation~\eqref{eq:K} --- the same Beta-posterior rejection rate the
-scheduler ranks by, rounded to the nearest percent. It is \emph{not} the
-ranking score $K/\hat{m}^{\,c}$, which mixes in cost and would be meaningless
-to the model, and it is \emph{not} the raw frequency $k(x)/n(x)$.
+\paragraph{The number shown is the posterior rate, and it is worded as an
+estimate.} The figure is $K(x)$ of Equation~\eqref{eq:K} --- the same
+Beta-posterior rate the scheduler ranks by, rounded to the nearest percent. It
+is \emph{not} the ranking score and \emph{not} the raw frequency $k(x)/n(x)$.
+Under the default prior $K(x) = (k(x)+0.5)/(n(x)+2.5)$, so $43\,\%$ is
+displayed both by a test with $k{=}4, n{=}8$ and by one with $k{=}1, n{=}1$,
+whose tallies are $50\,\%$ and $100\,\%$. The sentence therefore says
+\emph{an estimated $43\,\%$ of attempted fixes get this input wrong} rather
+than counting past attempts, because a tally would be false in both cases.
+Whether the number is shown at all is a separate configuration
+(\code{show\_kill\_rate}): it is the only thing in the prompt that says which
+requirement is load-bearing, and it has no analogue in the fact-selection
+literature, so it is priced rather than assumed.
 
-Under the default prior $\mathrm{Beta}(\tfrac12, 2)$ the shown value is
-\begin{equation}
-K(x) \;=\; \frac{k(x) + 0.5}{n(x) + 2.5},
-\label{eq:shown-rate}
-\end{equation}
-so the $43\,\%$ in the example above is a test that has rejected $k = 4$ of the
-$n = 8$ candidates it has been run against: $(4 + 0.5)/(8 + 2.5) = 0.4286$.
-
-Using the posterior rather than the raw frequency is deliberate. A test with
-$k = 1$ out of $n = 1$ has a raw rate of $100\,\%$, and telling the model that
-every attempt fails this check is a claim no single observation supports; the
-posterior reports $1.5/3.5 = 43\,\%$ instead. The cost of that choice is
-visible in the same two numbers: $k{=}1, n{=}1$ and $k{=}4, n{=}8$ both display
-as $43\,\%$, because at small $n$ the prior is doing most of the work. The
-figure is therefore an estimate of how likely the next candidate is to fail
-this test, not a count of how often past candidates did, and the sentence that
-carries it is worded as an estimate rather than as a tally.
+\paragraph{A test's identifier is never shown.} A file name carries nothing
+the model can act on, and on this benchmark it carries something it should
+\emph{not} have: contest naming marks the public sample cases, which are the
+small, highly discriminating ones. Because no prompt names a test, the rule
+that a prompt never names a test whose content it omits holds by
+construction.
 
 \subsection{How Hints Are Selected}
 
-At every round, the selector ranks proven tests by
+At every round the selector ranks proven tests by
 \begin{equation}
 \mathrm{hintscore}(x) \;=\; K(x) \times \mathrm{legibility}(x)
 \label{eq:hintscore}
 \end{equation}
-and takes the top $k$, with $k = 3$ by default --- but it does not take them
-blindly, and the two qualifications are the point of this subsection.
+and walks the ranking greedily, taking at most $k$ --- with $k = 3$ by
+default.
+
+\paragraph{Cost is deliberately absent.} The scheduler and the selector spend
+different currencies: a scan pays CPU seconds, a prompt pays tokens. A test
+taking five seconds is expensive for the scheduler and free for the prompt, so
+carrying $\hat{m}$ into Equation~\eqref{eq:hintscore} would discard the most
+informative facts for nothing.
+
+\paragraph{Legibility replaces it.} $\mathrm{legibility}(x)$ is $1$ when the
+test's input is at most $400$ characters and $0.45$ otherwise. The threshold
+exists because an input of several megabytes cannot be shown, and showing a
+truncated prefix of it while asserting a required output produces a
+\emph{false fact} --- the model is told to produce a specific output on an
+input it has not seen. The incident that produced the rule: the highest
+kill-rate test for one task is a $2.3$\,MB stress input, which is an excellent
+\emph{schedule} entry and worthless as a \emph{fact}. An illegible input is
+therefore rendered as a \emph{shape} --- its line count, its character count,
+and its first line verbatim, because on this benchmark the first line almost
+always carries $N$ and so says whether the failure is a complexity problem or
+an edge case. An expected output too large to show is \emph{withheld} rather
+than shaped, since a required value the model cannot read is noise with an
+assertion attached. The penalty is a factor rather than a veto, so a dominant
+illegible test can still outrank a legible one when nothing else is close.
 
 \paragraph{Near-duplicate hints are dropped.} Two hints that reject the same
-candidates spend two slots in the prompt to say one thing. The model gets no
-second failure mode and no second constraint, only the first one restated in
-different bytes, and it pays tokens and attention for the restatement. The
-selector therefore walks the ranking greedily and skips a candidate hint whose
-rejection set is already covered by one it has chosen, using the same
-containment of Equation~\eqref{eq:overlap} and the same threshold $\tau$:
+candidates are one fact spending two slots. The selector skips a candidate
+hint whose rejection set is already covered by one it has chosen, using the
+containment of Equation~\eqref{eq:overlap} and the same threshold $\tau$ ---
+but \emph{symmetrically}, unlike in the scheduler:
 \begin{equation}
 \max\bigl(\mathrm{overlap}(x \mid m),\; \mathrm{overlap}(m \mid x)\bigr) \;\ge\; \tau
 \quad\text{for some already-chosen } m \;\Longrightarrow\; \text{skip } x .
 \label{eq:hintdedup}
 \end{equation}
-The comparison is symmetric here, unlike in the scheduler. There, one test has
-already run and the question is whether the next one still has anything to add
-after it; here neither hint has run and the question is whether the \emph{pair}
-is worth two slots, so a narrow hint sitting inside a broad one is dropped
+In the scheduler one test has already run and the question is whether the next
+still adds anything; here neither has run and the question is whether the
+\emph{pair} is worth two slots, so a narrow hint inside a broad one is dropped
 whichever way round the two are ranked.
 
-\paragraph{$k$ is a ceiling, not a count.} Raising the default from $2$ to $3$
-is what the deduplication is for: asking for three distinct hints renders about
-what asking for two undeduplicated hints rendered before, with the third slot
-going to a genuinely different failure mode when one exists. Often one does
-not. In the pilot, $55\,\%$ of sessions ended with fewer than two distinct
-proven rejecters at all, so the selector returns fewer than $k$ far more often
-than it returns $k$. Every record therefore carries the number of hints that
-actually reached the prompt alongside the number requested, and the hint-count
-sweep of Chapter~\ref{ch:experiments} is read against the former. A sweep read
-against the requested $k$ would report a comparison it did not run.
-
-The cost term $\hat{m}(x)$ is deliberately \emph{absent} from
-Equation~\eqref{eq:hintscore}. The scheduler and the selector spend different
-currencies: a scan pays CPU seconds, a prompt pays tokens. A test that takes
-five seconds to run is expensive for the scheduler and free for the prompt, so
-carrying the cost term into hint selection would discard the most informative
-facts for no benefit.
-
-The legibility term is what replaces it. An input of a few bytes can be shown
-whole; an input of several megabytes cannot, and pasting a truncated prefix of
-it produces a requirement the model cannot satisfy --- it would be told to
-produce a specific output on an input it has not seen. Inputs above a length
-threshold of $400$ characters are therefore rendered as a \emph{shape}, the
-first line verbatim followed by the structure and size, and their score is
-multiplied by a penalty of $0.45$.
-
-That the penalty is a factor rather than a veto is deliberate: a test that
-rejects nearly everything is still the most useful fact available, so a
-dominant illegible test can outrank a legible one when nothing else is close.
-The identifier of a test case is never shown at all, because a file name
-carries no information the model can act on and invites it to reason about the
-benchmark rather than the program.
+\paragraph{$k$ is a ceiling, not a count.} Between the deduplication above and
+a thin pool of proven rejecters --- $55\,\%$ of pilot sessions ended with
+fewer than two --- the selector returns fewer than $k$ far more often than it
+returns $k$. Every record therefore carries the number of hints that actually
+reached the prompt alongside the number requested, and the sweep of
+Chapter~\ref{ch:experiments} is read against the former. A sweep read against
+the requested $k$ would report a comparison it did not run.
 
 \subsection{The Disclosure Dial}
 
@@ -522,24 +482,15 @@ findings.
 
 \subsection{Why This Is Not a Transcript}
 
-Three differences from transcript memory follow from the construction.
-
-\emph{The prompt does not grow.} At most $k$ hints appear in any round, and
-the bound does not depend on how long the session has run. It is \emph{at
-most} rather than exactly: a round reaches the prompt with fewer when the store
-holds fewer than $k$ proven tests, and with none at all in round~$1$, when the
-store is empty --- which is also what makes round~$1$ byte-identical across
-every configuration. A transcript, by contrast, grows linearly in the number of
-rounds and therefore walks past the point where more context starts to
-hurt~\citep{parasaram2025factselection}.
-
-\emph{The content changes.} Which tests have the highest rejection rate changes
-as the session proceeds, so round $10$ can carry entirely different hints from
-round $3$. A transcript is append-only: round $10$ contains everything round $3$
-contained.
-
-\emph{The facts are earned, not asserted.} Each hint is backed by a measured
-record in the store, produced by the scheduler that had to run the test anyway.
-The hint mechanism adds no executions of its own --- it reads the store, it
-never runs anything --- which is why the two mechanisms compose without their
-costs compounding.
+Three differences follow from the construction. \emph{The prompt does not
+grow}: at most $k$ hints appear in any round and the bound does not depend on
+how long the session has run, where a transcript grows linearly in rounds and
+therefore walks past the point where more context starts to
+hurt~\citep{parasaram2025factselection}. \emph{The content changes}: which
+tests have the highest rejection rate moves as the session proceeds, so round
+$10$ can carry entirely different hints from round $3$, where a transcript is
+append-only. \emph{The facts are earned, not asserted}: each hint is backed by a measured
+record produced by the scheduler that had to run the test anyway, and the hint
+mechanism adds no executions of its own. Even the one line that reports the
+previous attempt carries the \emph{last} outcome only --- an accumulating
+record grows the prompt roughly $3\times$ for a benefit measured at zero.

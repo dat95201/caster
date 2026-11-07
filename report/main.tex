@@ -15,9 +15,9 @@
 \usepackage{lmodern}
 
 % ---------- page geometry ----------
-\usepackage[a4paper,left=3cm,right=2.5cm,top=3cm,bottom=3cm,headheight=28pt]{geometry}
+\usepackage[a4paper,left=3cm,right=2.5cm,top=2.5cm,bottom=2.5cm,headheight=28pt]{geometry}
 \usepackage{setspace}
-\onehalfspacing
+\setstretch{1.15}
 \setlength{\emergencystretch}{3em}
 
 % ---------- maths ----------
@@ -39,6 +39,15 @@
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,calc}
 
 % ---------- misc ----------
+% ---------- float placement: fewer half-empty pages ----------
+\renewcommand{\topfraction}{0.92}
+\renewcommand{\bottomfraction}{0.85}
+\renewcommand{\textfraction}{0.06}
+\renewcommand{\floatpagefraction}{0.80}
+\setcounter{topnumber}{3}
+\setcounter{bottomnumber}{2}
+\setcounter{totalnumber}{5}
+
 \usepackage{enumitem}
 \usepackage{xcolor}
 \usepackage{fancyhdr}
@@ -47,6 +56,7 @@
 \usepackage{url}
 \usepackage[numbers,sort&compress]{natbib}
 \usepackage{textcomp}
+\usepackage{upquote}   % straight quotes and backticks inside verbatim
 
 \definecolor{bkblue}{HTML}{1F4E9C}
 \definecolor{pendred}{HTML}{A33A2E}
@@ -70,7 +80,7 @@
 % ---------- chapter headings ----------
 \titleformat{\chapter}[display]
   {\normalfont\huge\bfseries}{\chaptertitlename\ \thechapter}{20pt}{\Huge}
-\titlespacing*{\chapter}{0pt}{0pt}{30pt}
+\titlespacing*{\chapter}{0pt}{0pt}{18pt}
 
 % ---------- shorthands used throughout ----------
 \newcommand{\caster}{\textsc{Caster}}
@@ -90,7 +100,7 @@
   \begin{center}
   \fcolorbox{pendred}{pendred!5}{%
     \begin{minipage}{0.93\textwidth}
-      \small\textcolor{pendred}{\textbf{To be filled from the 100-task pilot.}}\;#1
+      \small\textcolor{pendred}{\textbf{Not yet measured.}}\;#1
     \end{minipage}}
   \end{center}}
 \newcommand{\figplaceholder}[1]{%
@@ -117,9 +127,8 @@
 \input{frontmatter/acknowledgements}
 \input{frontmatter/abstract}
 
+\setcounter{tocdepth}{1}
 \tableofcontents
-\listoffigures
-\listoftables
 
 % ======================= MAIN MATTER ========================
 \clearpage

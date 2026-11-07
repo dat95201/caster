@@ -1065,3 +1065,64 @@ before this field reads `timeout_repeats = 0`, so nothing becomes servable
 until an audit pass confirms it. Turning the default on cannot retroactively
 change a stored verdict; it can only let a confirmation be used once one is
 measured. `--quarantine-timeouts` restores the blanket refusal.
+
+---
+
+## 39. The overlap clause is kept after the pilot measured it at exactly zero
+
+**What pilot v1 (Block A, 97 complete tasks × 3 seeds × 20 rounds) says.**
+Replaying the arm's own candidate sequences three times, holding the
+exploration RNG fixed and changing only how `R(·)` is filled:
+
+| `R(·)` fed by | deferrals fired | CPU (s) | Δ vs off |
+|---|---:|---:|---|
+| nothing (`τ = 0`) | 0 | 3115.2 | reference |
+| the session, as shipped | **0** | 3115.2 | **0.0%** |
+| the audit's kill matrix | 2971 | 2910.3 | **−6.6%, CI95 [−12.6, −1.4]** |
+
+Not "small". **Zero** — across 296 sessions and 3,556 rounds the clause never
+fired once. `report/scripts/coverage_check.py` is the script; it drives the
+real `CaseLedger` and the real `policies.schedule`, and mirrors the deferral
+walk of `exec/verify.py`.
+
+**Why zero, precisely.** `redundant(x, passed)` needs a probe that PASSED this
+round to itself have a non-empty `R`. Under fail-fast a round records exactly
+one refuter, so a passing probe has a rejection on record in only **7.7% of
+rounds** (273 of 3,556), and the overlap must then also clear 0.75. Meanwhile
+the pool is extravagantly redundant: in the audit matrix a **median 87%** of
+ordered probe pairs within a task are ≥75% subsumed. The rule is right, the
+pool is the right shape for it, and the loop refuses to produce the one
+observation it needs.
+
+**The clause stays.** It fired zero times, so it cost zero; its upside is
+measured at −6.6% with an interval clear of zero; and the gap is now an
+engineering target with a budget attached — any scheme for building a partial
+rejection table must cost less than 6.6% of validation CPU. A table
+accumulated across sessions on one task, or across tasks in one contest, is
+the cheapest candidate.
+
+**The grid pair `km` vs `km-ov0` does NOT measure this, and must stop being
+quoted as if it did.** `episode.py:224` seeds the ledger RNG from the cell
+key, which contains `policy`, so the two arms draw different exploration
+positions from round 1. Their scan orders differ on **1,008 of 3,556 rounds**
+— far more often than the clause could possibly fire — and the resulting
+−0.54% CI95 [−3.3, +2.4] is exploration noise, not the clause. Two
+consequences:
+
+1. Everything that cited the grid pair (the ledger docstring's "−0.12%,
+   CI95 [−1.6, +1.3]", QUESTIONS RQ2's last row) now cites the controlled
+   replay instead.
+2. **Seed exploration on `(task, seed)`, not on the cell key.** Round 1 of the
+   candidate draw already does this, for the same reason — CRN dies silently
+   otherwise. The schedule RNG is the same bug one layer down, and it makes
+   every single-flag ablation in Block A noisier than it needs to be. This is
+   a `KEY_VERSION` bump and is not done yet.
+
+**The general lesson, which is bigger than this clause.** Fail-fast is most of
+why any memory-based schedule beats the incumbent by 60%, and it is
+simultaneously what starves every rule that reasons about *relationships
+between* probes — subsumption, redundancy, the whole `RTP_add` family. A
+session accumulates 1.54 distinct proven refuters on average and 60.5% of
+sessions end with fewer than two. Any future rule of that shape has to come
+with an answer to where its observations come from, and "the loop will produce
+them" is not one.

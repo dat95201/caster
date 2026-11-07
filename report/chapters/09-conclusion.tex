@@ -3,98 +3,93 @@
 
 \section{Conclusion}
 
-An LLM-based repair loop produces useful information on every iteration and then
-discards almost all of it. Every validation reveals which test rejected which
-candidate and what that test cost; every generation reveals which repair idea
-has already been tried. Current systems keep neither in a form that the next
+An LLM-based repair loop produces useful information on every iteration and
+then discards almost all of it. Every validation reveals which test rejected
+which candidate and what that test cost; every generation reveals which repair
+idea has already been tried. Current systems keep neither in a form the next
 iteration can use: schedulers rank tests by a count of past rejections and
 ignore how long a test takes, and prompts either carry nothing or carry a
 transcript that grows without bound.
 
 This report described \caster, which keeps that information in one small record
-per test case --- how often the test has run, how often it rejected a candidate,
-and how much CPU time those runs took --- and spends it twice.
-\textbf{Cost-aware validation scheduling} ranks tests by an estimated rejection
-rate divided by an estimated cost, so an unpromising patch is rejected as
-cheaply as possible rather than merely in as few steps as possible.
-\textbf{Selected hints} replace the accumulated transcript with a small,
-freshly chosen set of concrete requirements, so the prompt stays a constant size
-while its content changes to match what the session has just learned. The two
-mechanisms share one record by construction, which is what makes them a system
-rather than two features: scheduling produces the rejection evidence that hints
-are selected from, and better hints send fewer wasted candidates to the step
-that costs the most.
+per test case --- how often the test has run, how often it rejected a
+candidate, and how much CPU those runs took --- and spends it twice.
+\textbf{Cost-aware scheduling} ranks tests by an estimated rejection rate
+divided by an estimated cost, so an unpromising patch is rejected as cheaply as
+possible rather than merely in as few steps as possible. \textbf{Selected
+hints} replace the accumulated transcript with a small, freshly chosen set of
+concrete requirements, so the prompt stays a constant size while its content
+tracks what the session has just learned. The two share one record by
+construction, which is what makes them a system rather than two features.
 
-The whole mechanism is one record of three numbers per test case, updated in
-constant time. Nothing is trained, no profiling pass is required, and neither
-half adds a program execution or a model call: the scheduler reorders runs the
-loop was already making, and hint selection only reads what validation has
-already written down. That matters for more than tidiness --- the two other
-families of validation-cost reduction each require a project before they return
-anything, where this requires a counter and a timer.
+The whole mechanism is three numbers per test case, updated in constant time.
+Nothing is trained, no profiling pass is needed, and neither half adds a
+program execution or a model call.
 
-Because the approach operates only on which test runs first and what goes into
-the prompt, it does not compete with the other two families of validation-cost
-reduction. It composes with execution
-acceleration~\citep{chen2021uniapr,xiao2024expressapr}, which makes each run
-cheaper, and with execution-free verifiers~\citep{jain2025r2egym}, which remove
-candidates before they are run at all.
+\paragraph{What the pilot showed.} A pilot of $97$ ConDefects Python tasks,
+three seeds each, twenty rounds per session, measured the scheduling half.
 
-The evaluation is a pilot on $100$ ConDefects Python tasks, laid out in
-Chapter~\ref{ch:experiments} and reported in Chapter~\ref{ch:results}. Its
-purpose is to establish whether the effects exist at a scale worth a full
-corpus run and to fix the parameters that the full run must declare in advance.
-It is not a corpus-scale result and is not reported as one.
+\begin{itemize}[leftmargin=*,itemsep=4pt]
+\item Scheduling removed $\mathbf{60.8\,\%}$ of validation CPU against the
+order the benchmark ships, interval $[-73.3, -36.3]$, while repairing exactly
+the same bugs on exactly the same rounds.
+\item Almost all of that came from \textbf{having a memory at all}. Any
+configuration that remembered something landed within a few percent of the
+others, and all of them roughly $60\,\%$ below the incumbent.
+\item The new part of the rule --- \textbf{dividing by cost} --- was $2.9\,\%$
+cheaper than \frtp\ over a whole session, interval $[-11.0, +4.9]$, and that
+single figure hides the shape of the result. A rejection count is informative
+after one observation; a cost estimate is a mean. Over rounds $1$--$5$ the
+scheduler is $2.1\,\%$ \emph{more} expensive for dividing by a number it does
+not yet know; over rounds $11$--$15$ it is $10.6\,\%$ cheaper; the running
+total crosses over at round~$10$ and is still widening at round~$20$. The win
+also concentrates in the third of tasks whose test costs actually differ. It
+pays $13\,\%$ more executions for $14\,\%$ cheaper executions --- the trade it
+is designed to make, and one that is invisible to a study reported in
+executions alone.
+\end{itemize}
+
+The generation half has not been run. The report is therefore a measured result
+for the scheduler and a declared protocol for the hints.
 
 \section{Future Work}
 \label{sec:future}
 
 \begin{enumerate}[leftmargin=*,itemsep=8pt]
 
-\item \textbf{Run the full ConDefects corpus (roughly $1{,}244$ faults).}
-The pilot screens; the corpus measures. Three things change at that scale. The
-admission screen admits every sound fault rather than a drawn subset, so the
-corpus is no longer correlated with whatever finished first. Banding by pool
-size and by contest era becomes possible, which is what separates ``the method
-works'' from ``the method works on large heterogeneous pools'', the distinction
-Section~\ref{sec:disc-limits} says is the real one. And the parameters chosen
-on the pilot --- the cost exponent $c$, the hint count $k$, the exploration rate
-and the cold-start rule --- are declared \emph{before} the run and reported as
-sensitivity afterwards, so the headline is not a selected maximum.
+\item \textbf{Run the full corpus, and run it for longer than twenty rounds.}
+The pilot screens; the corpus measures. Two of its open questions --- whether
+the cost term beats \frtp, and whether a rate beats a count --- have point
+estimates in the right direction and intervals that straddle zero, which is
+what a corpus-scale run exists to resolve. The budget matters as much as the
+corpus size here: the scheduler only overtakes \frtp\ at round~$10$ and the
+gap is still growing at round~$20$, so a twenty-round budget measures the cost
+term during the half of the session in which it is still learning. A longer
+budget is the cheaper of the two experiments and should come first.
+
+\item \textbf{Run Block~B.} The generation half is implemented and unit-tested
+and has not been measured. It is the half the duplicate-rate literature says is
+worth the most: \citet{chen2025conversational} measured $65\,\%$ of a
+conversational repair system's patches to be duplicates.
 
 \item \textbf{Add a benchmark with method-level test suites, such as
-Defects4J~\citep{just2014defects4j}.} Every test in ConDefects is a whole-program
-execution, so nothing can be \emph{selected away} and prioritisation is the only
-lever. A project-scale Java benchmark has a call graph, and therefore has
-selection --- which is the setting where \citet{lou2024aprregression} find
-selection to dominate prioritisation. Two questions follow. Does a cost-aware
-schedule still help once the cheap tests have already been selected away? And is
-the right design a scheduler layered on top of a selector, where selection
-decides the candidate set and the cost-aware rank decides the order inside it?
-That setting is also where the method's own failure condition can be tested
-directly: method-level suites are more uniform in cost than contest pools, so
-the cost term should matter less there, and a measurement that shows otherwise
-would mean the mechanism is not the one claimed.
+Defects4J~\citep{just2014defects4j}.} Every test in ConDefects is a
+whole-program execution, so nothing can be selected away and prioritisation is
+the only lever. A project-scale Java benchmark has a call graph and therefore
+has selection, which is where \citet{lou2024aprregression} find selection to
+dominate prioritisation. Two questions follow: does a cost-aware schedule still
+help once the cheap tests have been selected away, and is the right design a
+scheduler layered on a selector? That setting also tests the method's own
+failure condition directly, because method-level suites are more uniform in
+cost than contest pools.
 
-\item \textbf{Add a second proposer model to test whether the rejection
-structure is model-dependent.} Everything the store learns is a statistic over
-the candidates one model produced. If two different models make different
-mistakes, different tests are discriminating for each, and the scheduler would
-re-learn per model --- which is fine, since it learns online, but it would mean
-the reported effect size is one model's. If instead the same tests are
-discriminating across models, the rejection structure is a property of the
-\emph{task} rather than of the proposer, which is a stronger and more useful
-claim: it would mean a cost table and a rejection profile could be computed once
-per benchmark and reused.
-
-\item \textbf{Report both bills together, and measure redundancy at the
-hypothesis level.} Validation CPU and generation tokens are halves of one cost,
-and optimising either alone can inflate the other, so the pair should be
-reported rather than either on its own. Separately, the duplicate rate used
-here is defined over normalised patch text and undercounts: two textually
-different patches expressing the same repair idea are equally wasteful but are
-not duplicates by that definition. Clustering candidates by repair hypothesis
-would give a tighter bound on how much redundancy a steering mechanism actually
-removes.
+\item \textbf{Add a second proposer model.} Everything the store learns is a
+statistic over the candidates one model produced. If different models make
+different mistakes, different tests are discriminating for each, and the
+scheduler re-learns per model --- which is fine, since it learns online, but it
+would mean the reported effect size is one model's. If instead the same tests
+are discriminating across models, the rejection structure is a property of the
+\emph{task}, which is a stronger claim: a rejection table could then be
+computed once per benchmark and reused, which is also what item~$1$ needs.
 
 \end{enumerate}

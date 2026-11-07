@@ -21,35 +21,21 @@ Each is defined once here and used consistently afterwards.
 \centering
 \caption{Terms used in this report.}
 \label{tab:terms}
-\small
-\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} X@{}}
+\footnotesize
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.20\textwidth} X@{}}
 \toprule
 Term & Meaning in this report\\
 \midrule
 Faulty program $s_0$ & The program that contains the bug.\\
-Test case $x$ & One input together with the output the program is expected to
-produce for it.\\
-Test pool $P$ & The finite set of test cases available for one task,
-$P = \{x_1,\dots,x_n\}$.\\
-Reject (or refute) & A test case \emph{rejects} a program when the program's
-output on that input differs from the expected output. One rejecting test is
-enough to prove the program wrong.\\
-Candidate patch $s$ & A modified program produced by the LLM in one iteration.\\
-Round (or iteration) & One pass of generate $\rightarrow$ validate
-$\rightarrow$ refine.\\
-Repair session & All rounds spent on one task, up to the budget $B$.\\
-Budget $B$ & The maximum number of rounds, that is, the maximum number of
-candidate patches, allowed per task.\\
-Scan & One validation: running a candidate against test cases from $P$ until
-one of them rejects it, or until all have passed.\\
-Plausible patch & A candidate that no test case in $P$ rejects. ``Plausible''
-rather than ``correct'' because passing a finite test pool is weaker than being
-right~\citep{qi2015plausibility}.\\
-Test-run cost $c(x)$ & The CPU time consumed by running one candidate on one
-test case $x$.\\
-Repair hypothesis & The idea behind a patch: what the model believes is wrong
-and how it intends to fix it. Many different patches can express one
-hypothesis.\\
+Test case $x$ & One input together with the output the program is expected to produce for it.\\
+Test pool $P$ & The finite set of test cases available for one task.\\
+Reject (refute) & A test case \emph{rejects} a program when its output on that input differs from the expected one. One rejecting test proves the program wrong.\\
+Candidate patch $s$ & A modified program produced by the LLM in one round.\\
+Round & One pass of generate $\rightarrow$ validate $\rightarrow$ refine. A \emph{session} is all rounds spent on one task, up to the budget $B$.\\
+Scan & One validation: running a candidate against test cases from $P$ until one rejects it, or until all have passed.\\
+Plausible patch & A candidate no test case in $P$ rejects --- ``plausible'' rather than ``correct'' because passing a finite pool is weaker than being right~\citep{qi2015plausibility}.\\
+Test-run cost $c(x)$ & The CPU time consumed by running one candidate on one test case $x$.\\
+Repair hypothesis & The idea behind a patch: what the model believes is wrong and how it intends to fix it. Many patches can express one hypothesis.\\
 \bottomrule
 \end{tabularx}
 \end{table}
@@ -304,67 +290,59 @@ pool.
 \subsection{Patches Versus Hypotheses}
 
 A \emph{repair hypothesis} is the idea behind a patch: what the model believes
-is wrong, and how it intends to fix it --- ``the loop bound is off by one'',
-``the sort key should be the second field'', ``integer division should be float
-division''. One hypothesis can be written as many different patches, differing
-in variable names, in statement order, or in whitespace.
+is wrong and how it intends to fix it --- ``the loop bound is off by one'',
+``integer division should be float division''. One hypothesis can be written
+as many different patches, differing in variable names, statement order or
+whitespace.
 
-This distinction matters for measurement. A \emph{duplicate} patch, in the sense
-used by \citet{chen2025conversational}, is a candidate whose normalised text has
-already been generated in this session. Two candidates that are textually
-different but express the same hypothesis are not duplicates by that definition,
-yet they are just as wasteful: both must be validated, and both fail for the
-same reason. The duplicate rate is therefore a \emph{lower bound} on the
-redundancy a repair loop actually produces, which is the sense in which the
-reported $65\,\%$ for \textsc{ChatRepair} is a conservative figure.
+The distinction matters for measurement. A \emph{duplicate} patch, in the sense
+used by \citet{chen2025conversational}, is a candidate whose normalised text
+has already been generated this session. Two candidates that are textually
+different but express the same hypothesis are not duplicates by that
+definition, yet they are just as wasteful: both must be validated and both fail
+for the same reason. The duplicate rate is therefore a \emph{lower bound} on
+the redundancy a repair loop produces, which is the sense in which the reported
+$65\,\%$ for \textsc{ChatRepair} is conservative.
 
 \subsection{Why Showing the History Is Not Enough}
 
 The natural fix for redundancy is to show the model what it has already tried.
-Three published observations say this is necessary but not sufficient.
+Three published observations say this is necessary but not sufficient. A
+transcript does not prevent repetition: \textsc{ChatRepair} keeps earlier
+incorrect patches and their failures in the conversation, and
+\citet{chen2025conversational} still measured $65\,\%$ of its patches to be
+duplicates. Refinement preserves a bad hypothesis: when the underlying idea is
+wrong, feedback-driven refinement produces superficial variants of it rather
+than a new idea~\citep{le2026semantic}, and the loop pays for a validation that
+was predictable in advance. And more context can hurt:
+\citet{parasaram2025factselection} found repair effectiveness to be
+\emph{non-monotonic} in the number of facts in the prompt, so past a point,
+adding true and relevant information makes repair worse --- and a transcript
+grows monotonically, so a long session necessarily walks past that point.
 
-\begin{enumerate}[leftmargin=*,itemsep=4pt]
-\item \textbf{A transcript does not prevent repetition.}
-\textsc{ChatRepair}~\citep{xia2024chatrepair} keeps earlier incorrect patches
-and their failures in the conversation, and
-\citet{chen2025conversational} still measured $65\,\%$ of its generated patches
-to be duplicates.
-\item \textbf{Refinement preserves a bad hypothesis.} When the underlying
-hypothesis is wrong, feedback-driven refinement tends to produce superficial
-variants of the same idea rather than a new idea~\citep{le2026semantic}. The
-loop then pays for a new validation that was predictable in advance.
-\item \textbf{More context can hurt.} \citet{parasaram2025factselection} found
-that repair effectiveness is \emph{non-monotonic} in the number of facts placed
-in the prompt: past a point, adding more true and relevant information makes
-repair worse. A transcript grows monotonically, so it necessarily walks past
-that point in a long session.
-\end{enumerate}
-
-Taken together these say the problem is not the \emph{absence} of history but
-its \emph{form}. A growing transcript is the worst of both: it costs tokens on
-every round, it dilutes the few facts that matter, and it still leaves the model
-free to re-propose.
+Taken together, the problem is not the \emph{absence} of history but its
+\emph{form}. A growing transcript is the worst of both: it costs tokens every
+round, it dilutes the few facts that matter, and it still leaves the model free
+to re-propose.
 
 \subsection{What a Hint Has to Be}
 
-Two properties distinguish a useful hint from a transcript line.
+Two properties separate a useful hint from a transcript line.
 
-\paragraph{It must be an observation, not a category.} A failure class --- ``the
-off-by-one family'' --- can only be phrased as a prohibition: \emph{do not do
-that again}. A concrete test case can be phrased as a positive requirement:
-\emph{on this input, produce exactly this output}. A requirement tells the model
-what success looks like; a prohibition only removes one option out of many and
-leaves the model to guess the rest. This is also why the scheduler and the hint
-contract are one system in \caster: the scheduler's unit of memory is the test
-case, and the test case is precisely the object that can be stated as a
-requirement.
+\paragraph{It must be an observation, not a category.} A failure class ---
+``the off-by-one family'' --- can only be phrased as a prohibition: \emph{do
+not do that again}. A concrete test case can be phrased as a positive
+requirement: \emph{on this input, produce exactly this output}. A requirement
+tells the model what success looks like; a prohibition removes one option and
+leaves it to guess the rest. This is also why the scheduler and the hint
+contract are one system here: the scheduler's unit of memory is the test case,
+and the test case is precisely the object that can be stated as a requirement.
 
 \paragraph{It must be selected, not accumulated.} Because effectiveness is
-non-monotonic in prompt content~\citep{parasaram2025factselection}, the right
-number of hints is small and roughly constant, not growing. Which hints those
-are changes from round to round, because the history changes. Selection must
-therefore happen at every iteration, which is what separates this approach from
-selecting static facts once before generation begins.
+non-monotonic in prompt content, the right number of hints is small and
+roughly constant. Which hints those are changes from round to round, because
+the history changes --- so selection must happen at every iteration, which is
+what separates this from selecting static facts once before generation begins.
 
 \section{Benchmark Background}
 \label{sec:bg-benchmark}

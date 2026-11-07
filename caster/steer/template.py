@@ -23,9 +23,15 @@ Six hard rules, each tied to a measurement or a paper finding:
    arm, and changing them breaks CRN round-1 identity.
 2. **Never name a probe whose content is not in the prompt.** Satisfied by
    construction here: `render` never writes a case name at all.
-3. **k = 2, fixed, non-accumulating.** The fact-selection plateau is 2–5,
-   measured saturation is 2.57 distinct refuters per episode, and the leakage
-   bound is 7.0% at k=2 against 16.8% at k=3.
+3. **k = 3, non-accumulating** — `CellSpec.k_facts` and `_STEER` both say 3
+   (DECISIONS 34); this line said 2 until the pilot write-up caught it. The
+   fact-selection plateau is 2–5 and measured saturation is 2.57 distinct
+   refuters per episode, so 2 was defensible; the default moved to 3 because
+   `ledger.evidence` now DEDUPLICATES, which frees a slot. It moved on that
+   argument, not on a measurement: leakage was 7.0% at k=2 against 16.8% at
+   k=3, and whether dropping near-duplicates pulls that back is what
+   `km+steer-k2` vs `km+steer` has to show. Read any sweep against
+   `k_facts_rendered`, never the requested k.
 4. **Evidence ranks by `K × legibility`, not `K/m̂`** — a different cost
    currency: the scan pays CPU, the prompt pays tokens. The **raw K** is what
    reaches the prompt, because the number there is a claim about the world

@@ -1,253 +1,172 @@
 \chapter{Discussion}
 \label{ch:discussion}
 
-\section{When \texorpdfstring{\caster}{CASTER} Does Not Help}
+\section{When the Method Does Not Help}
 \label{sec:disc-limits}
 
-A method is more useful when its failure conditions are stated than when they
-are discovered by the next person. \caster\ dominates the incumbent only where
-\emph{three} conditions hold together, and each of the three has a regime in
-which the method degrades to something already published --- or to nothing at
-all. Table~\ref{tab:conditions} states them, and the rest of this section
-explains each in turn.
+A method is more useful when its failure conditions are written down than when
+the next person discovers them. The scheduler beats the incumbent almost
+everywhere, but the part of it that is \emph{new} --- the division by cost ---
+needs three conditions, and the pilot gives evidence on all three.
 
 \begin{table}[htbp]
 \centering
-\caption[The three conditions for the method to pay off]{The three conditions
-under which \caster\ is expected to dominate, how each is measured, and what
-the method collapses to when the condition fails.}
+\caption{The three conditions under which the cost term is expected to pay,
+and what the method degrades to when each fails.}
 \label{tab:conditions}
 \small
 \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} X X@{}}
 \toprule
 Condition & Measured by & What happens when it fails\\
 \midrule
-\textbf{C1. The test pool is large enough} ($|P| \ge 10$) &
-$|P|$, a property of the frozen pool, known before any run &
+\textbf{C1. The pool is large enough} &
+$|P|$, known before any run &
 With a handful of tests there is little to order, and a candidate that survives
-pays for the whole pool whatever the order. Every policy converges to one
-schedule.\\
+pays for the whole pool whatever the order. Every configuration converges to
+one schedule.\\
 \addlinespace
-\textbf{C2. Test costs are \emph{not} uniform} &
-The within-task coefficient of variation of per-test CPU, from the frozen cost
-table &
-$\hat{m}$ becomes a constant, dividing by it changes no ranking, and the
-scheduler collapses into the rejection-rate policy --- \frtp\ with a
-denominator.\\
+\textbf{C2. Test costs are not uniform} &
+The within-task coefficient of variation of per-test CPU
+(Table~\ref{tab:res-arena}) &
+$\hat{m}$ becomes a constant, dividing by it changes no ranking, and the rule
+collapses to \frtp\ with a denominator.\\
 \addlinespace
 \textbf{C3. The task is hard enough for the proposer} &
-The repair rate of the floor configuration on that task, which is an
-\emph{outcome} and therefore only ever a post-hoc band &
-A task the model fixes in one or two rounds never builds a history. There is
-almost no validation to schedule and almost nothing to select hints from, so
-both mechanisms are inert.\\
+How many rounds the loop needs on that task &
+A task repaired in one or two rounds never builds a history, so there is
+nothing to schedule by and nothing to select hints from.\\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\paragraph{C1 and C2, briefly.} The scheduler's gain comes from choosing a good
-first test out of many, so a pool of three tests has six possible orders and
-little to choose between them; at $|P| = 1$ every policy is the same schedule
-by construction. And if every test costs the same, $\hat{m}$ is a constant,
-dividing by it changes no ranking, and what remains is \frtp\ with a
-denominator --- the method degrading gracefully to the published baseline in
-the regime where that baseline is already correct. The quantity that matters
-for C2 is the spread \emph{within} a task, not across tasks, because scheduling
-happens inside a task: a corpus of individually uniform tasks looks
-heterogeneous in aggregate and offers the scheduler nothing.
+\paragraph{C2 is the one the pilot can speak to, and it holds up.} The
+within-task cost spread is the variable that splits
+Table~\ref{tab:res-cv}, and the comparison against \frtp\ runs
+$+1.2\,\%$, $+1.1\,\%$, $-4.1\,\%$ across the three groups. That is the
+predicted ordering: the cost term costs about one percent where there is no
+spread and is the only group where it wins where there is. None of the three
+intervals excludes zero, so this is the \emph{shape} of the prediction
+confirmed rather than the prediction itself.
 
-\subsection{C3 --- A Task Too Easy for the Proposer}
+The quantity that matters is the spread \emph{within} a task, because a
+schedule only ever chooses among the tests of one task: a corpus of
+individually uniform tasks looks heterogeneous in aggregate and offers the
+scheduler nothing. Here the aggregate spread is enormous --- the
+99th-percentile test costs $177$ times the median --- while the median
+within-task CV is only $0.159$, so two thirds of these tasks are in the regime
+where C2 fails.
 
-The third condition is the one easiest to overlook, because it is a property of
-the \emph{pairing} of a task with a model rather than of the task alone.
+\paragraph{C3 dilutes rather than harms.} A corpus of easy tasks does not make
+the method look bad; it makes every configuration look identical and pulls a
+corpus-wide average towards no effect --- visible here in the $34$ of $97$
+tasks on which \code{sched} and \code{frtp} cost exactly the same. Difficulty
+is therefore a stratification variable, not a caveat.
 
-\caster\ only has anything to work with once the loop has failed a few times.
-Both mechanisms read a history: the scheduler needs runs recorded against tests
-before $K$ and $\hat{m}$ mean anything, and hints are selected only from tests
-that have actually rejected a candidate in this session. A task the proposer
-repairs on round one or two never produces that history. In the limit the
-comparison is empty --- if the first candidate is accepted, every configuration
-runs the same single scan in the same state, and the measured difference
-between them is zero by construction, not by failure.
+Note that C1 and C2 are properties of the frozen pool, known before any
+candidate exists, so splitting on them stratifies a fixed population. C3 is an
+\emph{outcome}, and admitting tasks on the basis of it would select the corpus
+on the result --- so the pilot reports the whole-corpus number as the headline
+and the split as a secondary reading, never the other way round.
 
-The consequence for reporting is sharper than it looks. A corpus of easy tasks
-does not make \caster\ look bad; it makes every configuration look identical,
-and it \emph{dilutes} a corpus-wide average towards no effect. Averaged over a
-corpus where half the tasks are repaired immediately, a real effect on the
-other half is halved. So difficulty is not a caveat to mention in passing --- it
-is a stratification variable, and an effect reported without it is reporting
-the mixture rather than the mechanism.
-
-\paragraph{Difficulty is an outcome, so it may never select the corpus.} C1 and
-C2 are properties of the frozen pool: both are known before any candidate is
-generated, so banding on them is a stratification of a fixed population. C3 is
-not. The repair rate of a task is produced \emph{by} the experiment, and
-admitting tasks on the basis of it would be selecting the corpus on an outcome
---- the corpus would become a function of how the model happened to perform,
-and no later analysis could undo that. The repair rate used for banding is
-therefore taken from one designated floor configuration, frozen once beside the
-corpus checksum, never recomputed per analysis, and computed \emph{per model},
-because the same task is a different difficulty for a $7$B model and for a
-hosted one.
-
-\subsection{How the Three Are Reported}
-
-Because all three conditions are bands rather than screens, the pilot reports
-both views from one run (Section~\ref{sec:exp-bands}): the whole corpus, and
-the sub-population where all three conditions hold. The two numbers answer
-different questions and both belong in the report.
-
-\begin{itemize}[leftmargin=*,itemsep=4pt]
-\item \textbf{The whole-corpus number} is what a deployment gets if it points
-the tool at everything, including the tasks the model fixes immediately and the
-pools too small to order. It is the honest headline for ``what does this buy
-me''.
-\item \textbf{The banded number} is what the mechanism does where the mechanism
-applies. It is the honest answer to ``does the idea work'', and it is the only
-one of the two that can be compared against a theory.
-\end{itemize}
-
-Reporting only the first understates a real effect by averaging it against
-tasks where no effect is possible. Reporting only the second is cherry-picking
-unless the band boundaries were declared in advance --- which is why
-Section~\ref{sec:exp-bands} fixes them before the corpus run rather than after
-seeing which cut looks best.
-
-\section{Reporting CPU Rather Than Executions}
+\section{Reporting Seconds Rather Than Executions}
 \label{sec:disc-units}
 
 The prioritisation literature reports the number of test executions rather than
-elapsed time, and the reason is good: the largest study of patch validation to
-date counts executions rather than seconds precisely because elapsed time is
-unstable across environments~\citep{lou2024aprregression}. Time depends on the
-machine, on what else is running, and on the interpreter; a count does not.
+elapsed time, for a good reason: the largest study of patch validation to date
+counts executions precisely because elapsed time is unstable across
+environments~\citep{lou2024aprregression}. Time depends on the machine, on what
+else is running, and on the interpreter; a count does not.
 
 The problem is that the reproducible unit and the deployed unit are different
-quantities, and the choice between them is not neutral when test costs vary. A
-deployment pays for seconds. If a schedule runs more tests but finishes sooner,
-a paper reporting executions concludes that it lost and a deployment running it
-finds that it won. The two numbers can rank two schedules in opposite orders,
-and nothing in the execution count signals when this is happening.
+quantities, and the choice between them is not neutral when test costs vary.
+The pilot produced the textbook case. Against \frtp, the proposed scheduler
+runs $13\,\%$ \emph{more} test executions and spends $3\,\%$ \emph{less} CPU.
+Reported in executions it lost; reported in seconds it won. A deployment pays
+for seconds.
 
-This report therefore reports \textbf{both units for every configuration} ---
-it costs nothing, since a loop that measures time is already counting
-executions --- and reports CPU rather than wall clock, which on a machine
-running several workers is contaminated by siblings. It also reports the
-\textbf{ratio}, CPU per execution, because that is the diagnostic separating
-``found the rejection in fewer steps'' from ``found it in cheaper steps'': two
-schedules with the same total CPU and very different ratios are doing different
-things.
+This report therefore gives \textbf{both units for every configuration} --- it
+costs nothing, since a loop that measures time is already counting executions
+--- and reports CPU rather than wall clock, which on a machine running several
+workers is contaminated by siblings. It also reports the \textbf{ratio}, CPU
+per execution, because that is what separates ``found the rejection in fewer
+steps'' from ``found it in cheaper steps''. In Table~\ref{tab:res-rq1b} that
+column is the whole mechanism: $0.401$\,s per run for \frtp\ against $0.344$\,s
+for \code{sched}.
 
 None of this contradicts \citeauthor{lou2024aprregression}'s reasoning. Their
-setting --- Java projects with method-level test suites --- is also one where
-test \emph{selection} is available: a test can be skipped entirely because no
-changed method reaches it, and in that setting they find selection to dominate
-prioritisation. In the setting studied here a test is one whole-program
-execution on one input, so there is no call graph to cut and nothing to select
-away. Prioritisation is the only lever, and the cost spread inside a pool is
-what it has to work with.
+setting --- Java projects with method-level suites --- is one where test
+\emph{selection} is available: a test can be skipped entirely because no
+changed method reaches it, and there they find selection to dominate
+prioritisation. Here a test is one whole-program execution on one input, so
+there is no call graph to cut and nothing to select away. Prioritisation is the
+only lever.
 
-\section{Combining with Acceleration and Verifiers}
+\section{Composing with the Other Two Families, and What Each Costs to Adopt}
 \label{sec:disc-combining}
 
-\caster\ changes only two things: which test runs first, and what goes into the
-prompt. It does not change how a test is executed, and it does not change
+The method changes only two things: which test runs first, and what goes into
+the prompt. It does not change how a test is executed, and it does not change
 whether a candidate is executed at all. That makes it composable with the other
-two families of validation-cost reduction, and the composition is worth stating
-because the three operate on different factors of the same bill.
+two families of validation-cost reduction, each of which reduces a different
+factor of Equation~\eqref{eq:three-factors}.
 
-Each family reduces a different factor of
-Equation~\eqref{eq:three-factors}, and none reduces another family's.
-
-\paragraph{Execution acceleration} reduces the third factor.
+\textbf{Execution acceleration} makes each run cheaper ---
 \textsc{UniAPR}~\citep{chen2021uniapr} and
-\textsc{ExpressAPR}~\citep{xiao2024expressapr} make each test run cheaper by
-reusing a warm runtime and by adapting mutation-testing techniques, reporting up
-to $137\times$ over plain validation. A scheduler is indifferent to how a test
-is executed: it ranks by measured cost, so if acceleration changes the costs,
-the ranking simply re-learns them. One interaction is worth noting, and it cuts
-in a useful direction: acceleration typically removes a fixed per-run overhead,
-which \emph{increases} the relative spread between cheap and expensive tests and
-therefore gives the cost term more to work with rather than less.
+\textsc{ExpressAPR}~\citep{xiao2024expressapr} reuse a warm runtime and adapt
+mutation-testing techniques, reporting up to $137\times$. A scheduler is
+indifferent to how a test is executed: it ranks by measured cost, so if
+acceleration changes the costs it re-learns them. One interaction cuts in a
+useful direction: acceleration typically removes a fixed per-run overhead,
+which \emph{increases} the relative spread between cheap and expensive tests,
+and that spread is exactly what the cost term needs. \textbf{Execution-free
+verification} removes candidates before they are run;
+\textsc{R2E-Gym}~\citep{jain2025r2egym} finds learned and test-based verifiers
+complementary, so a learned verifier can filter cheaply and the scheduler then
+decides how to spend execution on the survivors. \textbf{Selected hints} also
+reduce the number of candidates, but earlier: they change what is generated
+rather than filtering it afterwards.
 
-\paragraph{Execution-free verification} reduces the first factor.
-\textsc{R2E-Gym}~\citep{jain2025r2egym} finds learned verifiers and test-based
-verifiers to be complementary --- test-based verifiers often cannot distinguish
-among candidates, while learned verifiers are biased towards stylistic features,
-and combining them beats either alone. A learned verifier placed before
-validation filters candidates cheaply; the scheduler then decides how to spend
-execution on those that survive. The two do not compete for the same decision.
-
-\paragraph{Selected hints} also reduce the first factor, but earlier and by a
-different route: rather than filtering candidates after they are generated, they
-change what is generated. The two are compatible, and a system using both would
-pay the generation cost only for candidates that neither the hint contract nor
-the verifier has reason to reject.
-
-The practical reading is that these are not alternatives to be chosen between.
-A deployment that cares about validation cost should expect to run an
-accelerated executor, a scheduler on top of it, and a filter in front of both;
-this work supplies the middle layer and the generation-side half, and is
-explicitly designed not to constrain the other two.
-
-\section{The Cost of Adopting It}
-\label{sec:disc-adoption}
-
-Section~\ref{sec:disc-combining} argued that the three families of
-validation-cost reduction compose. They do not, however, cost the same to
-adopt, and for a team deciding what to do first that difference matters as much
-as the size of the saving.
-
-Execution acceleration~\citep{chen2021uniapr,xiao2024expressapr} needs an
+\paragraph{They do not cost the same to adopt.} Acceleration needs an
 integration with one language runtime --- class reloading, state resetting ---
-and the correctness argument that comes with reusing a dirty runtime: a large
-payoff, tied to a specific stack. Execution-free
-verification~\citep{jain2025r2egym} needs training data, a training run and a
-second model to serve, plus a standing question about distribution shift.
-Search over repair attempts~\citep{antoniades2025swesearch} spends extra model
-calls per bug, a direct increase in the resource this work is trying to reduce.
-\caster\ needs three counters, one sort per round, and a timer around a call
-the loop already makes (Table~\ref{tab:overhead}).
+and the correctness argument that comes with reusing a dirty runtime.
+Execution-free verification needs training data, a training run, a second model
+to serve, and a standing question about distribution shift. Search over repair
+attempts~\citep{antoniades2025swesearch} spends extra model calls per bug,
+which increases the resource this work is trying to reduce. The scheduler needs
+three counters, one sort per round, and a timer around a call the loop already
+makes (Section~\ref{sec:method-cost}).
 
-Scheduling is therefore the cheapest of the four to try and
-the easiest to withdraw: if it does not help on a given corpus it degrades to
-the ordering the loop already used, and removing it is deleting a comparator.
-Nothing about the rest of the system has to change to accommodate it, and
-nothing has to be retrained when the proposer model is swapped --- the
-statistics are of the task and the session, not of the model, so a new model
-simply starts writing a new record.
+It is therefore the cheapest of the four to try and the easiest to withdraw:
+if it does not help it degrades to the ordering the loop already used, and
+nothing has to be retrained when the proposer is swapped, because the
+statistics are of the task and the session rather than of the model. That is
+also an argument about where to start. Acceleration and verifiers have larger
+ceilings and both require a project; a scheduler is an afternoon, and it
+establishes whether the pool has any cost structure worth exploiting before
+anyone commits to the larger work --- $60\,\%$ of validation CPU here was
+removed by three counters.
 
-This is also an argument about where a cost-reduction effort should start.
-Acceleration and verifiers both have larger ceilings; they also both require a
-project. A scheduler is an afternoon, and it establishes whether the pool has
-any cost structure worth exploiting before anyone commits to the larger work.
-If the within-task cost spread turns out to be flat
-(Section~\ref{sec:disc-limits}, C2), that is worth knowing \emph{before}
-building a runtime integration, not after.
-
-\paragraph{Simplicity is a claim that has to survive the ablation.} A cheap
-mechanism is only a virtue if it is doing something. The ablation ladder of
-Section~\ref{sec:exp-ladder} exists partly for this reason: if the whole effect
-is recovered by \code{kill-only}, then the cost term is ornament and the honest
-report is that \frtp\ with a denominator was enough. The point of the present
-section is not that \caster\ is good because it is simple, but that \emph{if}
-the effect survives the ablation, it was bought very cheaply.
+\paragraph{Simplicity is a claim that has to survive the ablation, and it only
+partly did.} Table~\ref{tab:res-ladder} shows a plain rejection count ---
+\frtp, published in $2013$ --- already captures nearly the whole effect here.
+The honest statement of the contribution is therefore narrower than the
+headline: scheduling matters enormously, and the cost term adds a further
+amount that grows over a session and concentrates where the theory says it
+should. Establishing that the second part is real needs the full corpus.
 
 \section{What the Pilot Can and Cannot Settle}
 \label{sec:disc-scope}
 
-A pilot of $100$ tasks is a screening instrument. It can establish that an
-effect exists and is large enough to justify a corpus-scale run, it can rule out
-directions whose intervals straddle zero by a wide margin, and it can fix the
-parameters that the full run must declare in advance. It cannot establish a
-magnitude: an effect size estimated on $100$ tasks and then reported as the
-headline of a corpus-scale study is a selected maximum, and the honest handling
-is to declare the parameters now and report the full-corpus number as the
-result.
+A pilot of $97$ tasks is a screening instrument: it can show that an effect
+exists and is large enough to justify a corpus run, and fix the parameters
+that run must declare in advance. It cannot establish a magnitude.
 
-One specific caution applies to the cost exponent $c$ and the hint count $k$.
-Both are chosen by a sweep on the pilot data. If the full run then reports
-results at those values without saying so, the reported effect inherits the
-selection. Section~\ref{sec:future} therefore commits to declaring both before
-the corpus run and to reporting the sweeps as sensitivity rather than as
-findings.
+\textbf{Settled:} scheduling the oracle is worth doing ($-60.8\,\%$, no cost
+in repairs), and memory rather than the score is the dominant term.
+\textbf{Not settled:} whether dividing by cost beats \frtp\ at corpus scale,
+whether a rate beats a count at a larger budget, and anything on the
+generation side.
+
+One caution applies to the cost exponent $c$ and the hint count $k$: a value
+selected on the data it is reported on is optimistically biased, so both are
+declared before the corpus run (Section~\ref{sec:future}).

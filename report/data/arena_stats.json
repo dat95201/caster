@@ -1,0 +1,21 @@
+{
+ "arena_tasks": 68,
+ "arena_cases": 2523,
+ "arena_patches": 4670,
+ "cost_mean": 0.5376971704320254,
+ "cost_median": 0.076308,
+ "cost_p90": 1.7396582000000025,
+ "cost_p99": 4.476038200000001,
+ "cost_max": 7.50151,
+ "cost_cv_within_task_median": 0.5708763414798268,
+ "killrate_mean": 0.4630785776225698,
+ "killrate_median": 0.3058823529411765,
+ "never_kill_share": 0.16765755053507728,
+ "top10_kill_mass": 0.21568929931627792,
+ "corr_logcost_killrate_median": 0.17241058797880304,
+ "corpus_tasks": 309,
+ "pool_median": 34,
+ "pool_mean": 38.94174757281554,
+ "pool_min": 15,
+ "pool_max": 144
+}

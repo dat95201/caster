@@ -103,6 +103,7 @@ as its record of rejecting patches.}
 \label{fig:three-axes}
 \end{figure}
 
+
 \paragraph{Execution acceleration} makes each test run cheaper. Because patch
 validation repeatedly runs the same test suite on slightly different program
 variants, it is closely related to mutation analysis, and several works adapt
@@ -159,57 +160,39 @@ verification~\citep{jain2025r2egym}.
 A second line of work aims to help LLMs explore the repair space more
 effectively instead of repeatedly sampling similar candidates.
 
-\paragraph{Search-based approaches} organise repair attempts into an explicit
-search structure. \textsc{SWE-Search}~\citep{antoniades2025swesearch} integrates
-Monte Carlo Tree Search into a software agent and uses a hybrid value function,
-in which the LLM provides both numerical estimates and qualitative assessments,
-to balance exploration and exploitation. This yields a $23\,\%$ relative
-improvement on SWE-bench over agents without search. Search broadens
-exploration, but every additional branch produces candidates that must be
-validated, which increases the cost this work aims to reduce.
+\paragraph{Search and in-loop memory.} \textsc{SWE-Search}
+\citep{antoniades2025swesearch} organises repair attempts into a Monte Carlo
+tree search with an LLM value function, improving on SWE-bench by $23\,\%$
+relative; but every additional branch produces candidates that must be
+validated, which increases the cost this work reduces.
+\textsc{ChatRepair}~\citep{xia2024chatrepair} instead keeps earlier incorrect
+patches and their test failures in the conversation, so the model can avoid
+repeating them. \citet{chen2025conversational} found that duplicate patches
+still made up $65\,\%$ of what it generated, and that plain independent
+resampling repaired \emph{more} bugs at an equal budget. When the underlying
+repair hypothesis is flawed, feedback-driven refinement tends to produce only
+superficial variants of the same idea~\citep{le2026semantic}. Outside repair,
+\textsc{Reflexion}~\citep{shinn2023reflexion} stores verbal reflections on
+failed trials in an episodic memory. In all of these the history is
+accumulated or summarised \emph{as it arrives}, rather than selected according
+to what the next iteration needs.
 
-\paragraph{In-loop memory approaches} retain information from earlier attempts
-on the same bug. \textsc{ChatRepair}~\citep{xia2024chatrepair} keeps previously
-generated incorrect patches and their test-failure information in the
-conversation so that the LLM avoids repeating them.
-\citet{chen2025conversational}, however, found that duplicate patches still
-constituted $65\,\%$ of the patches \textsc{ChatRepair} generated during
-plausible patch generation on Defects4J. Moreover, when the underlying repair
-hypothesis is flawed, feedback-driven refinement tends to produce only
-superficial variants of the same idea~\citep{le2026semantic}. Outside program
-repair, \textsc{Reflexion}~\citep{shinn2023reflexion} lets language agents
-reflect verbally on feedback from failed trials and stores these reflections in
-an episodic memory that conditions subsequent attempts. In both cases, the
-history is accumulated or summarised \emph{as it arrives} rather than selected
-according to what the next iteration needs.
+\paragraph{Hypotheses and transferred experience.} A second group makes the
+model reason explicitly about the cause. \textsc{AutoSD}~\citep{kang2025autosd}
+prompts for hypotheses together with debugger experiments that test them;
+\textsc{ThinkRepair}~\citep{yin2024thinkrepair} builds a pool of chains of
+thought from validated fixes and selects few-shot examples from it. Both
+improve the quality of individual hypotheses without tracking which hypotheses
+this session has already refuted. \textsc{SWE-Exp}~\citep{chen2025sweexp} goes
+further and transfers distilled experience across bugs --- but that experience
+comes from \emph{other} bugs, whereas the history most informative for
+avoiding a repeat is the one produced on the current one.
 
-\paragraph{Hypothesis-driven approaches} make the LLM reason explicitly about
-the cause of a bug before or while patching it.
-\textsc{AutoSD}~\citep{kang2025autosd} prompts the LLM to formulate hypotheses
-about the bug, together with debugger experiments that test them. It executes
-these experiments and lets the LLM judge whether each hypothesis holds before
-generating a fix. \textsc{ThinkRepair}~\citep{yin2024thinkrepair} first builds a
-knowledge pool of chains of thought that led to validated fixes, then repairs a
-new bug by selecting examples from this pool for few-shot prompting, optionally
-refining the patch with test feedback. These approaches improve the quality of
-individual hypotheses but do not explicitly track which hypotheses have already
-been refuted within a repair session.
-
-\paragraph{Experience-driven approaches} transfer knowledge across bugs.
-\textsc{SWE-Exp}~\citep{chen2025sweexp} observes that memoryless agents
-redundantly re-explore failed trajectories. It addresses this with an experience
-bank that captures both successful and failed repair attempts and distills
-reusable knowledge at multiple levels, from problem comprehension to concrete
-code changes. Such experience is retrieved from \emph{other} bugs, whereas the
-history most informative for avoiding repeated failures is often the one
-produced on the current bug.
-
-In contrast, we do not accumulate or summarise the session history; at each
-iteration \caster\ selects a small set of hints from it, ranked by the per-test
-rejection statistics that its validation scheduler already maintains, so that
-the LLM is directed by the tests that most often refute candidates and away from
-the hypotheses they have refuted. Unlike search-based approaches, it does so
-without generating additional candidates.
+In contrast, \caster\ does not accumulate or summarise the session history. At
+each iteration it selects a small set of hints from it, ranked by the per-test
+rejection statistics its scheduler already maintains, so the model is directed
+by the tests that most often refute candidates and away from the hypotheses
+they have refuted --- and, unlike search, without generating extra candidates.
 
 \section{Context Selection for LLM-Based Repair}
 \label{sec:rel-context}
@@ -233,37 +216,27 @@ new failures are observed.
 \section{Summary: Where This Work Sits}
 \label{sec:rel-summary}
 
-Figure~\ref{fig:three-axes} separated the surveyed work by \emph{which part of
-the bill} it reduces. This section asks a narrower question about the
-scheduling family and its neighbours: of the design decisions \caster\ makes,
-which ones has someone already made?
+Figure~\ref{fig:three-axes} separated the surveyed work by \emph{which part
+of the bill} it reduces. This section asks a narrower question: of the
+design decisions \caster\ makes, which ones has someone already made?
 
-Three dimensions distinguish it:
+Three dimensions distinguish it. \textbf{D1:} does the system decide
+\emph{which test to run first}? \textbf{D2:} does the \emph{measured cost} of
+a test enter that decision? \textbf{D3:} does the system \emph{choose} what
+evidence enters the prompt, rather than including all of it or none?
 
-\begin{description}[leftmargin=1.5cm,style=nextline,itemsep=2pt,topsep=4pt]
-\item[\textbf{D1}] Does the system decide \emph{which test to run first}?
-\item[\textbf{D2}] Does the \emph{measured cost} of a test enter that decision?
-\item[\textbf{D3}] Does the system \emph{choose} what evidence enters the
-prompt, rather than including all of it or none of it?
-\end{description}
-
-Each dimension is satisfied by published work on its own. What we found no
-occupant for is the combination: Table~\ref{tab:related} lists the systems that
-hold at least one of the three and says, for each, what is still different
-here. Two things about how to read it. Blank cells mean we are not aware of a
-system in that position, to the best of our knowledge, not that none exists ---
-the table is a claim about the literature we surveyed. And D2 is only
-meaningful alongside D1, since the cost of a test can enter a ranking only if
-there is a ranking; there is no D2-without-D1 to look for.
+Each dimension is satisfied by published work on its own; what we found no
+occupant for is the combination. Blank cells in Table~\ref{tab:related} mean
+we are not aware of a system in that position, not that none exists, and D2 is
+only meaningful alongside D1, since cost can enter a ranking only if there is
+a ranking.
 
 
 
-Only systems holding at least one of D1--D3 appear. Those that reduce a
-different factor of the validation bill --- \textsc{UniAPR},
-\textsc{ExpressAPR}, \textsc{R2E-Gym} --- and those that change the search
-rather than the evidence --- \textsc{SWE-Search}, \textsc{SWE-Exp},
-\textsc{ThinkRepair} --- are placed in Figure~\ref{fig:three-axes} instead,
-because scoring them here would produce a row of dashes and compare nothing.
+Only systems holding at least one of D1--D3 appear; those that reduce a
+different factor of the bill, or change the search rather than the evidence,
+are placed in Figure~\ref{fig:three-axes} instead, because scoring them here
+would produce a row of dashes and compare nothing.
 
 \begin{table}[htbp]
 \centering
@@ -271,8 +244,8 @@ because scoring them here would produce a row of dashes and compare nothing.
 that occupy at least one of D1--D3, and what still separates each from this
 work. \checkmark\ is full, $\circ$ is partial, blank is absent.}
 \label{tab:related}
-\small
-\setlength{\tabcolsep}{5pt}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
 \begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{0.21\textwidth} c c c X@{}}
 \toprule
 System & D1 & D2 & D3 & What is still different here\\
@@ -280,24 +253,19 @@ System & D1 & D2 & D3 & What is still different here\\
 Additional greedy \citep{rothermel2001prioritizing} & \checkmark & & &
 Ranks by coverage of the program, a static property, not by anything the repair
 loop observes\\
-\addlinespace
 \frtp~\citep{qi2013frtp} & \checkmark & & &
 Ranks on a \emph{count} of rejections: no denominator, so it cannot tell an
 unrun test from one that never rejects; and no cost term\\
-\addlinespace
 \textsc{Agentless}~\citep{xia2025agentless} & \checkmark & & &
 The model picks which tests look relevant; nothing records what actually
 rejected what, and nothing is timed\\
-\addlinespace
 Cost-cognizant TCP \citep{elbaum2001cost} & \checkmark & \checkmark & &
 Regression testing, not repair. Costs are supplied before the run rather than
 measured inside it, and no evidence is returned to a generator\\
-\addlinespace
 Fact selection \citep{parasaram2025factselection} & & & \checkmark &
 Selects \emph{static} facts about the bug, once, before generation begins.
 Says nothing about validation, and does not reselect as the session produces
 new failures\\
-\addlinespace
 \textsc{ChatRepair}~\citep{xia2024chatrepair}, \textsc{Reflexion}~\citep{shinn2023reflexion}
  & & & $\circ$ &
 History reaches the prompt, but it is accumulated rather than selected, so it
@@ -309,12 +277,11 @@ One per-test record drives both the schedule and the prompt\\
 \end{tabularx}
 \end{table}
 
-Three gaps follow, and together they are what this work adds. \textbf{(1)}
-Repair-loop schedulers ignore cost: the one line of work that puts cost in the
-ranking~\citep{elbaum2001cost} comes from regression testing and assumes the
-cost is known in advance. \textbf{(2)} A count of rejections discards the
-evidence of \emph{not} rejecting, since a test run ten times that rejected
-nothing and a test never run both score zero; a rate is the first quantity
-that reads the denominator. \textbf{(3)} Session history is accumulated rather
-than selected --- fact selection~\citep{parasaram2025factselection} does
-select, but once, over facts fixed before the first candidate is drawn.
+Three gaps follow, and together they are what this work adds. Repair-loop
+schedulers ignore cost, and the one line of work that puts cost in the
+ranking~\citep{elbaum2001cost} assumes it is known in advance. A count of
+rejections discards the evidence of \emph{not} rejecting, since a test run ten
+times that rejected nothing and a test never run both score zero. And session
+history is accumulated rather than selected --- fact
+selection~\citep{parasaram2025factselection} does select, but once, over facts
+fixed before the first candidate is drawn.

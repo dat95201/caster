@@ -1,6 +1,6 @@
 MAIN := main
 
-.PHONY: all clean distclean view figures
+.PHONY: all clean distclean view figures analysis
 
 all: $(MAIN).pdf
 
@@ -9,10 +9,16 @@ $(MAIN).pdf: $(MAIN).tex metadata.tex refs.bib \
              $(wildcard figures/*.pdf)
 	latexmk -pdf -interaction=nonstopmode -halt-on-error $(MAIN).tex
 
-# Regenerate the pilot figures from the analysis outputs in data/.
-# Needs the three raw inputs (see data/README.md) next to scripts/.
-figures:
-	cd scripts && python3 make_figs.py && cp figs/*.pdf ../figures/
+# Re-derive every pilot number and figure from the merged run in
+# ../data/pilot-v1. `analysis` writes data/*.json; `figures` draws from them.
+RUN ?= ../../data/pilot-v1
+
+analysis:
+	cd scripts && python3 pilot_v1.py $(RUN)
+	cd scripts && PYTHONPATH=../.. python3 coverage_check.py $(RUN)
+
+figures: analysis
+	cd scripts && python3 pilot_figs.py
 
 clean:
 	latexmk -c $(MAIN).tex
