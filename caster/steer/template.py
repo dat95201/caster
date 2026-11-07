@@ -123,8 +123,18 @@ REASONING_HEADROOM = 24_000
 _REASONING_PREFIXES = ("o1", "o3", "o4", "o5")
 
 
+#: Must stay in step with `llm.client._REASONING_FAMILIES`. Duplicated rather
+#: than imported for the same reason `CHARS_PER_TOKEN` is: the budget rule must
+#: not depend on the call path.
+_REASONING_FAMILIES = ("gpt-5", "gpt-6")
+
+
 def is_reasoning_model(model: str) -> bool:
-    return bool(model) and model.split("-", 1)[0] in _REASONING_PREFIXES
+    if not model:
+        return False
+    if model.split("-", 1)[0] in _REASONING_PREFIXES:
+        return True
+    return any(model == f or model.startswith(f + "-") for f in _REASONING_FAMILIES)
 
 
 def output_ceiling(model: str | None = None) -> int:
@@ -499,7 +509,16 @@ def build(
         used.append("S4")
 
     rendered_facts = 0
-    if steer_on:
+    # `chat` REPLACES the contract; it does not ride on top of it. It used to
+    # fall into the `else` below and render S5 + S6 *and* S9, which made the one
+    # arm labelled "the published comparator" a strictly richer prompt than
+    # `km+steer`: RQ3's contract-versus-conversation comparison was really
+    # contract versus contract-plus-conversation, and the 0.50-against-0.63
+    # reproduction of Chen et al. was measured on a prompt that still carried
+    # the contract. Measured on the gpt-6-luna pilot before this line existed:
+    # `km+chat` rendered k_facts > 0 on 215 of 275 rounds and its median prompt
+    # was 1,049 tokens against `km+steer`'s 693 and `km`'s 483.
+    if steer_on and steer_mode != "chat":
         if steer_mode == "exclusion":
             s5 = s5_exclusion(facts)
             tag = "S5x"

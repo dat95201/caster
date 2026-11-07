@@ -12,6 +12,7 @@ dependencies = [
     "scipy",
     "openai",
     "python-dotenv",
+    "truststore",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,6 @@
 # Secrets and local config
 .env
+.env.*
 
 # Run output. `RUN_DIR` nests under these; the directories themselves stay.
 # Anchored, or `report/data/` — which IS source, it holds the analysis output

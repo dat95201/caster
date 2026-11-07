@@ -60,6 +60,7 @@ import os
 import pathlib
 import signal
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -240,6 +241,46 @@ class _Coalescer:
             return self._results.get(key)
 
 
+#: The trust store this module verifies against.
+#:
+#: `client.py` reaches a backend through the OpenAI SDK, which is httpx, which
+#: trusts `certifi`. This module reaches one through `urllib`, which trusts
+#: OpenSSL's compiled-in paths — empty on a macOS python.org build. While every
+#: backend was a local Ollama over http the difference was invisible: none of
+#: the three call sites below ever negotiated TLS. The first https backend makes
+#: the gateway the only component in the codebase that trusts nothing, and the
+#: symptom is a 502 whose body says CERTIFICATE_VERIFY_FAILED — which reads like
+#: a network fault and is not one.
+#:
+#: `SSL_CERT_FILE` / `SSL_CERT_DIR` still win when set, because a TLS-inspecting
+#: corporate proxy signs with a root certifi has never heard of and the operator
+#: is the only one who can supply it.
+_TLS_CONTEXT: ssl.SSLContext | None = None
+
+
+def tls_context() -> ssl.SSLContext:
+    global _TLS_CONTEXT
+    if _TLS_CONTEXT is None:
+        if os.environ.get("SSL_CERT_FILE") or os.environ.get("SSL_CERT_DIR"):
+            _TLS_CONTEXT = ssl.create_default_context()
+        else:
+            try:
+                # `truststore` reads the OPERATING SYSTEM's trust store, which is
+                # what the SDK half of this codebase already verifies against and
+                # the only store that knows about a root an MDM pushed onto the
+                # machine. certifi would not: a TLS-inspecting corporate proxy
+                # signs with a root no public bundle ships.
+                import truststore
+                _TLS_CONTEXT = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            except ImportError:
+                try:
+                    import certifi
+                    _TLS_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+                except ImportError:
+                    _TLS_CONTEXT = ssl.create_default_context()
+    return _TLS_CONTEXT
+
+
 def verify_window(base_url: str, model: str, expected: int, *,
                   timeout: float = 15.0) -> int:
     """Ask a backend what context window it is actually serving.
@@ -270,7 +311,8 @@ def verify_window(base_url: str, model: str, expected: int, *,
                 headers={"Content-Type": "application/json"},
                 method="POST" if path == "/api/show" else "GET",
             )
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout,
+                                        context=tls_context()) as resp:
                 served = extract(json.loads(resp.read().decode())) or served
         except (urllib.error.URLError, json.JSONDecodeError, OSError, TimeoutError):
             continue
@@ -457,8 +499,18 @@ class Gateway:
             if b.healthy:
                 continue
             try:
-                with urllib.request.urlopen(b.url.rstrip("/") + "/models", timeout=5):
+                with urllib.request.urlopen(b.url.rstrip("/") + "/models", timeout=5,
+                                            context=tls_context()):
                     pass
+            except urllib.error.HTTPError as exc:
+                # The probe deliberately carries no Authorization, so a hosted
+                # backend answers 401. That is a server that is UP. Letting it
+                # fall through to URLError (whose subclass it is) left a cloud
+                # backend evicted for the life of the process: `respawn` is
+                # local-only, so the `else` below just skipped it forever and
+                # every later call was a 502 nobody could explain.
+                if exc.code not in (401, 403):
+                    continue
             except (urllib.error.URLError, OSError, TimeoutError):
                 if self.respawn is not None and b.kind == "local":
                     try:
@@ -523,6 +575,17 @@ class Gateway:
 
     def _forward_once(self, key: str, body: bytes,
                       headers: dict[str, str]) -> tuple[int, bytes, dict[str, str]]:
+        # Case-insensitive, for exactly the reason the cache-key lookup in
+        # `forward` already is — and this one was missed. HTTP header names are
+        # case-insensitive, and httpx, which the OpenAI SDK speaks through,
+        # sends them lowercased. A `.get("Authorization")` therefore missed
+        # EVERY call made by the client half of this codebase and substituted
+        # the placeholder, so the upstream answered 401 "Incorrect API key
+        # provided: unused" — while the identical request from curl, which
+        # sends the capitalised name, succeeded. The placeholder stays for the
+        # genuinely keyless case: a local Ollama wants no credential.
+        auth = next((v for k, v in headers.items()
+                     if k.lower() == "authorization" and v), "Bearer unused")
         attempts = 0
         last: tuple[int, bytes, dict[str, str]] = (
             502, b'{"error":"no healthy backend"}', {"Content-Type": "application/json"})
@@ -540,12 +603,13 @@ class Gateway:
                 data=body, method="POST",
                 headers={
                     "Content-Type": "application/json",
-                    "Authorization": headers.get("Authorization", "Bearer unused"),
+                    "Authorization": auth,
                     "X-Caster-Cache-Key": key,
                 },
             )
             try:
-                with urllib.request.urlopen(req, timeout=self.service_timeout) as resp:
+                with urllib.request.urlopen(req, timeout=self.service_timeout,
+                                            context=tls_context()) as resp:
                     payload = resp.read()
                     status = resp.status
                 self._release(backend, ok=True)

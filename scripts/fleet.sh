@@ -202,6 +202,25 @@ for lo, hi in plan_ranges($from, $to, $shards):
 
   local -a entries=()
   local i=0
+
+  # One manifest row, built by a SCRIPT FILE taking argv — not by interpolating
+  # shell variables into a multi-line `python3 -c` string, which is what this
+  # was and the only place in this file that did it. That form depends on how
+  # the shell parses nested quotes inside $( ), so it worked under bash 5 on
+  # Colab and shattered under the bash macOS ships: the dict literal was split
+  # on its commas and each fragment handed to its own python, which then wrote
+  # no manifest at all while the shards it had already spawned kept running.
+  local mkentry="$FLEET_ROOT/.mkentry.py"
+  cat >"$mkentry" <<'MKENTRY'
+import json, sys
+i, lo, hi, pid, stage, log, rc = sys.argv[1:8]
+print(json.dumps({"index": int(i), "first": int(lo), "last": int(hi),
+                  "pid": int(pid),
+                  "command": ["caster", stage, "--shard", i,
+                              "--first", lo, "--last", hi],
+                  "log": log, "rc": rc}))
+MKENTRY
+
   for r in "${ranges[@]}"; do
     read -r lo hi <<<"$r"
     local log="$FLEET_ROOT/shard-$(printf '%02d' "$((base + i))").log"
@@ -220,11 +239,7 @@ for lo, hi in plan_ranges($from, $to, $shards):
           _ $CASTER "$stage" --shard "$((base + i))" --first "$lo" --last "$hi" \
           "${forward[@]}" >/dev/null 2>&1 &
     local pid=$!
-    entries+=("$(python3 -c "
-import json,sys
-print(json.dumps({'index': $i, 'first': $lo, 'last': $hi, 'pid': $pid,
-                  'command': ['caster','$stage','--shard','$i','--first','$lo','--last','$hi'],
-                  'log': '$log', 'rc': '$rc'}))")")
+    entries+=("$(python3 "$mkentry" "$i" "$lo" "$hi" "$pid" "$stage" "$log" "$rc")")
     echo "fleet: shard $i  [$lo..$hi]  pid $pid  -> $log"
     i=$((i + 1))
     sleep "$stagger"

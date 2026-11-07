@@ -367,15 +367,23 @@ ARMS: dict[str, Arm] = {a.arm_id: a for a in [
         "the negative block the contract replaces; measured to INVERT at low "
         "semantic pressure (0.052 → 0.117)",
         overrides={**_STEER, "steer_mode": "exclusion"}),
+    Arm(14, "natural+chat", "natural", "B", "RQ3",
+        "ChatRepair AS PUBLISHED: no test scheduling, no contract — the "
+        "transcript is the whole memory. This is the comparator the study "
+        "needs and `km+chat` was never able to be, because ChatRepair has no "
+        "scheduler to lend it. Pairing the two isolates what KM is worth to a "
+        "conversational repairer, which is a question, instead of handing the "
+        "comparator the contribution under test",
+        overrides={"steer_mode": "chat"}),
     Arm(14, "km+chat", "km", "B", "RQ3",
-        "ChatRepair-style full transcript. IN the grid: measured here at 0.50 "
-        "budgeted success against no-memory's 0.63, which independently "
-        "reproduces Chen et al. (arXiv 2503.15050) — conversation loses to "
-        "redrawing, and 65% of ChatRepair's patches are duplicates. That is a "
-        "result, not a reason to drop the arm. It is also the one arm that can "
-        "hit the context ceiling, so its context_overflow count is reported "
-        "before any of its numbers",
-        overrides={**_STEER, "steer_mode": "chat"}),
+        "KM scheduling + ChatRepair-style transcript, and NO contract — it "
+        "carried `**_STEER` and so rendered S5 + S6 on top of S9, which made "
+        "every `km+steer` vs `km+chat` reading a comparison of contract "
+        "against contract-plus-transcript. The 0.50-against-0.63 figure once "
+        "quoted here was measured under that defect and is withdrawn. It is "
+        "also the one arm that can hit the context ceiling, so its "
+        "context_overflow count is reported before any of its numbers",
+        overrides={"steer_mode": "chat"}),
     Arm(15, "km+steer-k1", "km", "B", "RQ4", "k = 1 fact",
         overrides={**_STEER, "k_facts": 1}),
     Arm(15, "km+steer-k2", "km", "B", "RQ4",

@@ -127,11 +127,44 @@ class CallMeta:
 _REASONING_PREFIXES = ("o1", "o3", "o4", "o5")
 
 
+#: Families that reason but whose id starts with `gpt`, so the leading-token
+#: rule below cannot see them. Measured, not assumed: every one of the first
+#: 853 gpt-6-luna rounds reported non-zero `reasoning_tokens` (mean 1,646, max
+#: 8,361), and 64% of them came back `finish_reason: length` because the budget
+#: was sized by the chat rule — `estimate` with no headroom — while the hidden
+#: tokens were spent out of that same ceiling before a character was written.
+_REASONING_FAMILIES = ("gpt-5", "gpt-6")
+
+
 def is_reasoning(model: str) -> bool:
     """Matched on the leading token of the id, so `o4-mini`,
     `o4-mini-2025-04-16` and `o3-mini` route the same way while `gpt-4o-mini` —
-    whose id starts with `gpt` — does not."""
-    return bool(model) and model.split("-", 1)[0] in _REASONING_PREFIXES
+    whose id starts with `gpt` — does not. The gpt-5/gpt-6 families are matched
+    on the FULL family prefix instead, for the same reason `gpt-4o-mini` must
+    not be: the leading token is `gpt` for all three."""
+    if not model:
+        return False
+    if model.split("-", 1)[0] in _REASONING_PREFIXES:
+        return True
+    return any(model == f or model.startswith(f + "-") for f in _REASONING_FAMILIES)
+
+
+#: Families whose Chat Completions call takes `max_completion_tokens` instead of
+#: `max_tokens`. This is a WIRE-FORMAT question and deliberately NOT the same
+#: predicate as `is_reasoning`: the o-series introduced the rename, and the
+#: gpt-5/gpt-6 families inherited the new argument while staying ordinary chat
+#: models. Folding them into `is_reasoning` would also hand them the 48k output
+#: ceiling and stop `temperature` being sent — two protocol changes smuggled in
+#: by a model renaming one argument, and both of them reach the cache key.
+_NEW_PARAM_PREFIXES = ("gpt-5", "gpt-6")
+
+
+def uses_max_completion_tokens(model: str) -> bool:
+    if not model:
+        return False
+    if model.split("-", 1)[0] in _REASONING_PREFIXES:
+        return True
+    return any(model == p or model.startswith(p + "-") for p in _NEW_PARAM_PREFIXES)
 
 
 class LLMClient:
@@ -452,15 +485,18 @@ class LLMClient:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
         }
-        if is_reasoning(model):
+        # Two independent questions, asked separately on purpose.
+        if uses_max_completion_tokens(model):
             kwargs["max_completion_tokens"] = max_tokens
+        else:
+            kwargs["max_tokens"] = max_tokens
+        if is_reasoning(model):
             if effort:
                 kwargs["reasoning_effort"] = effort
             # `temperature` is deliberately not sent: the reasoning profile
             # accepts only its own default and errors on anything else. It stays
             # in the cache key, where it records what the protocol asked for.
         else:
-            kwargs["max_tokens"] = max_tokens
             kwargs["temperature"] = temperature
 
         # The gateway coalesces concurrent misses of one cache key onto a single
@@ -483,6 +519,16 @@ class LLMClient:
             # its own on a host without the package, which would MASK whatever
             # actually went wrong. Found by running exactly that.
             mod, name = (type(exc).__module__ or ""), type(exc).__name__
+            if mod.split(".")[0] == "openai" and name == "BadRequestError" \
+                    and "output limit" in str(exc):
+                # The SAME failure as `finish_reason: length`, delivered as an
+                # exception instead of a response. Some endpoints return 200
+                # with the reply truncated; this one 400s. The taxonomy already
+                # says what to do with a reply the output budget cut short —
+                # charge the round, leave the ledger alone, carry on — but it
+                # was only reachable from the 200 path, so a 400 killed the
+                # shard and took its whole remaining range with it.
+                raise TruncatedResponse(f"{name}: {exc}") from exc
             if not (mod.split(".")[0] == "openai"
                     and name in ("APIConnectionError", "APITimeoutError")):
                 raise

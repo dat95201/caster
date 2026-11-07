@@ -83,6 +83,8 @@ from caster.llm.client import (
 from caster.report.records import RoundRecord
 from caster.run import policies, propose
 from caster.steer import template
+from caster.steer.render import (render_input, render_observation,
+                                 render_required)
 
 #: "one failure is weather; a run of them is climate". A NON-key flag:
 #: raising it extends an episode that hit it, it never changes a draw already
@@ -411,7 +413,8 @@ def run_episode(
             ))
 
             if spec.steer_mode == "chat":
-                transcript.append(_transcript_entry(cand.source, result))
+                transcript.append(_transcript_entry(
+                    cand.source, result, adapter=adapter, task=spec.task))
                 # ChatRepair restarts after N consecutive FAILED REPAIR
                 # ATTEMPTS, not after N backend outages. Keyed on the wrong
                 # signal the restart policy is inert, and this is the one arm
@@ -450,12 +453,54 @@ def run_episode(
     )
 
 
-def _transcript_entry(source: str, result: ScanResult) -> str:
-    verdict = (
-        "it passed every probe it was run on" if result.accept
-        else f"it failed on one of the inputs above: {result.killed_by or 'inconclusive'}"
-    )
-    return f"```python\n{source.rstrip()}\n```\n{verdict}"
+def _transcript_entry(source: str, result: ScanResult, *,
+                      adapter: Any = None, task: str = "") -> str:
+    """One turn of the ChatRepair-style transcript.
+
+    The verdict line used to read `it failed on one of the inputs above:
+    hand_00.txt`, which was wrong twice over.
+
+    A probe filename is a CASE NAME, and `steer.render` states the rule it
+    breaks: "nothing in a prompt names a case whose content is not also in it".
+    AtCoder's `sample`/`example` prefixes are themselves information — the
+    public, small, highly discriminating cases — which is the artefact the
+    hashed tie-break exists to keep out of the schedule. Measured on the
+    gpt-6-luna pilot before this was fixed: 222 rounds carried a case name into
+    a prompt, 9 of them a `sample_` one.
+
+    And "above" referred to the contract block, which a chat arm does not
+    render once `steer_mode="chat"` stops riding on top of S5. The sentence
+    pointed at nothing.
+
+    What ChatRepair feeds back is the failing TEST, so that is what goes in:
+    the input and the required output through the same shape-safe renderer the
+    contract uses, plus what this attempt actually printed. No name. When the
+    case cannot be rendered the turn degrades to a nameless verdict rather than
+    to a label the model cannot act on.
+    """
+    if result.accept:
+        return f"```python\n{source.rstrip()}\n```\nit passed every probe it was run on"
+
+    detail = ""
+    probe = result.killed_by
+    if probe and adapter is not None:
+        case = adapter.case(task, probe)
+        ref = adapter.reference(task, probe)
+        if case is not None and ref is not None:
+            lines = ["it failed on this input:",
+                     render_input(case.input_text),
+                     render_required(ref.value)]
+            seen = (result.observations or {}).get(probe)
+            if seen is not None:
+                lines.append("    your attempt "
+                             + render_observation(seen.status, seen.output,
+                                                  seen.error_type,
+                                                  seen.error_message,
+                                                  seen.output_len))
+            detail = "\n".join(x for x in lines if x)
+    if not detail:
+        detail = "it failed on one of the probes it was run on"
+    return f"```python\n{source.rstrip()}\n```\n{detail}"
 
 
 def _maybe_restart(restarts: int, transcript: list[str], consecutive: int,
